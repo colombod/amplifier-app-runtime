@@ -32,7 +32,7 @@ def serve(host: str, port: int, reload: bool) -> None:
     click.echo("Press Ctrl+C to stop")
 
     uvicorn.run(
-        "amplifier_server.app:create_app",
+        "amplifier_server_app.app:create_app",
         factory=True,
         host=host,
         port=port,
