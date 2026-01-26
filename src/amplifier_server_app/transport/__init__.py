@@ -1,16 +1,40 @@
 """Transport abstraction layer.
 
-Provides protocol-agnostic interfaces for event streaming.
-Start with SSE over HTTP/2, designed for HTTP/3 + WebTransport future.
+Provides protocol-agnostic interfaces for client-server communication:
+- SSE (Server-Sent Events) - HTTP/1.1, HTTP/2, wide compatibility
+- WebSocket - Bidirectional, widely supported
+- WebTransport - HTTP/3, best for multiplexing and reconnection
+- stdio - For subprocess/IPC/editor integration
+
+The transport layer abstracts the underlying protocol so clients
+and servers can switch between transports without code changes.
 """
 
-from .base import EventStream, EventStreamFactory, TransportConfig
-from .sse import SSEEventStream, SSETransport
+from .base import (
+    Event,
+    EventPublisher,
+    EventStream,
+    EventStreamFactory,
+    Transport,
+    TransportConfig,
+    TransportMode,
+)
+from .sse import SSEEventStream
+from .stdio import StdioConfig, StdioTransport, run_stdio_server
 
 __all__ = [
+    # Base abstractions
+    "Event",
     "EventStream",
+    "EventPublisher",
     "EventStreamFactory",
+    "Transport",
     "TransportConfig",
+    "TransportMode",
+    # SSE implementation
     "SSEEventStream",
-    "SSETransport",
+    # stdio implementation
+    "StdioConfig",
+    "StdioTransport",
+    "run_stdio_server",
 ]

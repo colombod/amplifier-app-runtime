@@ -2,6 +2,7 @@
 
 Commands:
     amplifier-server serve    - Run headless HTTP server
+    amplifier-server stdio    - Run in stdio mode (for subprocess/IPC)
     amplifier-server health   - Check server health
 """
 
@@ -25,11 +26,11 @@ def main(ctx: click.Context) -> None:
 @click.option("--port", default=4096, help="Port to bind to")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for development")
 def serve(host: str, port: int, reload: bool) -> None:
-    """Run the Amplifier server."""
+    """Run the Amplifier server (HTTP mode)."""
     import uvicorn
 
-    click.echo(f"Starting Amplifier server on http://{host}:{port}")
-    click.echo("Press Ctrl+C to stop")
+    click.echo(f"Starting Amplifier server on http://{host}:{port}", err=True)
+    click.echo("Press Ctrl+C to stop", err=True)
 
     uvicorn.run(
         "amplifier_server_app.app:create_app",
@@ -38,6 +39,87 @@ def serve(host: str, port: int, reload: bool) -> None:
         port=port,
         reload=reload,
     )
+
+
+@main.command()
+def stdio() -> None:
+    """Run in stdio mode for subprocess/IPC communication.
+
+    Reads JSON objects from stdin (one per line).
+    Writes JSON objects to stdout (one per line).
+
+    Example usage from Python:
+
+        proc = subprocess.Popen(
+            ["amplifier-server", "stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+
+        # Send a message
+        proc.stdin.write(json.dumps({"type": "prompt", "content": "Hello"}) + "\\n")
+        proc.stdin.flush()
+
+        # Read responses
+        for line in proc.stdout:
+            event = json.loads(line)
+            print(event)
+
+    Example usage from Node.js:
+
+        const { spawn } = require('child_process');
+        const server = spawn('amplifier-server', ['stdio']);
+
+        server.stdin.write(JSON.stringify({type: 'prompt', content: 'Hello'}) + '\\n');
+
+        server.stdout.on('data', (data) => {
+            const event = JSON.parse(data.toString());
+            console.log(event);
+        });
+    """
+    from .transport.stdio import Event, StdioTransport
+
+    click.echo("Starting Amplifier server in stdio mode", err=True)
+    click.echo("Reading from stdin, writing to stdout", err=True)
+
+    async def handle_event(event: Event) -> Event | None:
+        """Handle incoming events and return responses."""
+        if event.type == "ping":
+            return Event(type="pong", properties={})
+
+        if event.type == "health":
+            return Event(
+                type="health_response",
+                properties={"status": "ok", "mode": "stdio"},
+            )
+
+        if event.type == "prompt":
+            # TODO: Integrate with actual session execution
+            return Event(
+                type="response",
+                properties={
+                    "message": "stdio mode active - session integration pending",
+                    "received": event.properties,
+                },
+            )
+
+        # Echo unknown events back with error
+        return Event(
+            type="error",
+            properties={
+                "error": "unknown_event_type",
+                "received_type": event.type,
+            },
+        )
+
+    async def run() -> None:
+        transport = StdioTransport()
+        await transport.run_loop(handle_event)
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        click.echo("\nShutting down", err=True)
 
 
 @main.command()
