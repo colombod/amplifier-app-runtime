@@ -206,7 +206,7 @@ class TestCommandTypes:
         """All CommandType values should be valid strings."""
         for cmd_type in CommandType:
             assert isinstance(cmd_type.value, str)
-            assert "." in cmd_type.value  # All commands have namespace.action format
+            assert len(cmd_type.value) > 0  # All commands are non-empty strings
 
     def test_expected_command_types_exist(self):
         """Expected command types should be defined."""

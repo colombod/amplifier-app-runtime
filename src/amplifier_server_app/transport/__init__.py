@@ -21,7 +21,9 @@ from .base import (
 )
 from .sse import SSEEventStream
 from .stdio import StdioConfig, StdioTransport, run_stdio_server
-from .stdio_adapter import StdioProtocolAdapter, run_stdio_adapter
+
+# Note: stdio_adapter is imported separately to avoid circular imports
+# Use: from amplifier_server_app.transport.stdio_adapter import StdioProtocolAdapter
 
 __all__ = [
     # Base abstractions
@@ -38,7 +40,4 @@ __all__ = [
     "StdioConfig",
     "StdioTransport",
     "run_stdio_server",
-    # Protocol-based stdio adapter
-    "StdioProtocolAdapter",
-    "run_stdio_adapter",
 ]
