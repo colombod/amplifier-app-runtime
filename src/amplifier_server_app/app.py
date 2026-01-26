@@ -1,29 +1,47 @@
 """Amplifier Server Application.
 
 Creates the Starlette ASGI application with all routes.
+
+Route organization:
+- /health - Health check endpoints
+- /event - SSE event streaming (legacy)
+- /session/* - Session management (legacy, will be deprecated)
+- /v1/* - Protocol-based routes (recommended)
 """
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
-from .routes import event_routes, health_routes, session_routes
+from .routes import event_routes, health_routes, protocol_routes, session_routes
 
 
-def create_app() -> Starlette:
+def create_app(*, use_protocol_routes: bool = True) -> Starlette:
     """Create the Amplifier backend application.
+
+    Args:
+        use_protocol_routes: If True, use protocol-based routes at /v1/
+                            If False, use legacy session routes
 
     Returns:
         Configured Starlette application
     """
     # Combine all routes
-    routes: list[Route] = []
+    routes: list[Route | Mount] = []
     routes.extend(health_routes)
     routes.extend(event_routes)
-    routes.extend(session_routes)
 
-    # CORS middleware for local development (Phase 1)
+    if use_protocol_routes:
+        # Mount protocol routes at /v1/ prefix
+        routes.append(Mount("/v1", routes=protocol_routes))
+        # Also keep at root for backward compatibility during migration
+        routes.extend(protocol_routes)
+    else:
+        # Legacy routes
+        routes.extend(session_routes)
+
+    # CORS middleware for local development
     middleware = [
         Middleware(
             CORSMiddleware,

@@ -21,6 +21,7 @@ from .base import (
 )
 from .sse import SSEEventStream
 from .stdio import StdioConfig, StdioTransport, run_stdio_server
+from .stdio_adapter import StdioProtocolAdapter, run_stdio_adapter
 
 __all__ = [
     # Base abstractions
@@ -37,4 +38,7 @@ __all__ = [
     "StdioConfig",
     "StdioTransport",
     "run_stdio_server",
+    # Protocol-based stdio adapter
+    "StdioProtocolAdapter",
+    "run_stdio_adapter",
 ]
