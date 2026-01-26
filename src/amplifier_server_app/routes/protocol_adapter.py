@@ -5,6 +5,11 @@ and protocol events to HTTP responses.
 
 This is the ONLY place where HTTP-specific logic lives.
 All business logic is in the CommandHandler.
+
+Encoding:
+- All JSON uses UTF-8 encoding (no BOM)
+- Content-Type headers include charset=utf-8
+- SSE streams use UTF-8 with proper event format
 """
 
 from __future__ import annotations
@@ -39,23 +44,25 @@ def get_handler() -> CommandHandler:
 # =============================================================================
 
 
-async def events_to_sse(events: AsyncIterator[Event]) -> AsyncIterator[str]:
-    """Convert protocol events to SSE format.
+async def events_to_sse(events: AsyncIterator[Event]) -> AsyncIterator[bytes]:
+    """Convert protocol events to SSE format (UTF-8 encoded).
 
     SSE format: data: {json}\n\n
+    All output is UTF-8 encoded bytes for cross-platform consistency.
     """
     async for event in events:
         data = event.model_dump_json()
-        yield f"data: {data}\n\n"
+        yield f"data: {data}\n\n".encode()
 
 
-async def events_to_ndjson(events: AsyncIterator[Event]) -> AsyncIterator[str]:
-    """Convert protocol events to newline-delimited JSON.
+async def events_to_ndjson(events: AsyncIterator[Event]) -> AsyncIterator[bytes]:
+    """Convert protocol events to newline-delimited JSON (UTF-8 encoded).
 
     NDJSON format: {json}\n
+    All output is UTF-8 encoded bytes for cross-platform consistency.
     """
     async for event in events:
-        yield event.model_dump_json() + "\n"
+        yield (event.model_dump_json() + "\n").encode("utf-8")
 
 
 # =============================================================================
@@ -121,13 +128,13 @@ async def streaming_response(
     if format == "ndjson":
         return StreamingResponse(
             events_to_ndjson(handler.handle(command)),
-            media_type="application/x-ndjson",
+            media_type="application/x-ndjson; charset=utf-8",
             headers={"X-Accel-Buffering": "no"},
         )
     else:
         return StreamingResponse(
             events_to_sse(handler.handle(command)),
-            media_type="text/event-stream",
+            media_type="text/event-stream; charset=utf-8",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",

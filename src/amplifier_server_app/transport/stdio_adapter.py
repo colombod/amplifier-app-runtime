@@ -6,17 +6,25 @@ and protocol events to stdout JSON lines.
 This enables CLI tools and other processes to communicate with
 Amplifier using the same protocol as HTTP/WebSocket clients.
 
-Wire format (newline-delimited JSON):
+Wire format (newline-delimited JSON, UTF-8 encoded):
 - Input (stdin):  {"id": "cmd_123", "cmd": "session.create", "params": {...}}
 - Output (stdout): {"id": "evt_456", "type": "result", "correlation_id": "cmd_123", ...}
+
+Cross-platform considerations:
+- All JSON is UTF-8 encoded (no BOM)
+- Newlines are always LF (\\n), never CRLF
+- Input accepts both LF and CRLF (normalized to LF)
+- Binary mode used internally for consistent behavior
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import os
 import sys
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from ..protocol import Command, CommandHandler, Event
 from ..session import session_manager
@@ -25,6 +33,35 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# UTF-8 encoding for all JSON operations
+ENCODING = "utf-8"
+
+# Newline character (always LF for cross-platform consistency)
+NEWLINE = "\n"
+
+
+def _ensure_binary_stream(stream: BinaryIO | None, default_fd: int, mode: str) -> BinaryIO:
+    """Ensure we have a binary stream for consistent encoding.
+
+    Args:
+        stream: Provided stream or None
+        default_fd: File descriptor for default (0=stdin, 1=stdout, 2=stderr)
+        mode: 'rb' for read, 'wb' for write
+
+    Returns:
+        Binary stream
+    """
+    if stream is not None:
+        return stream
+
+    # Get raw binary stream, bypassing any text wrapper
+    if default_fd == 0:
+        return sys.stdin.buffer
+    elif default_fd == 1:
+        return sys.stdout.buffer
+    else:
+        return sys.stderr.buffer
 
 
 class StdioProtocolAdapter:
@@ -36,13 +73,19 @@ class StdioProtocolAdapter:
     All business logic is delegated to CommandHandler - this adapter
     only handles serialization and I/O.
 
+    Encoding:
+        - All I/O uses UTF-8 encoding explicitly
+        - Binary streams used internally for cross-platform consistency
+        - Output uses LF newlines (not CRLF) regardless of platform
+        - Input accepts both LF and CRLF (stripped during processing)
+
     Usage:
         adapter = StdioProtocolAdapter()
         await adapter.run()  # Blocks until stdin closes
 
     Wire Protocol:
-        Commands: One JSON object per line on stdin
-        Events: One JSON object per line on stdout
+        Commands: One JSON object per line on stdin (UTF-8, LF or CRLF)
+        Events: One JSON object per line on stdout (UTF-8, LF only)
         Errors: Written to stderr (not protocol events)
 
     Example session:
@@ -57,20 +100,43 @@ class StdioProtocolAdapter:
 
     def __init__(
         self,
-        stdin: TextIO | None = None,
-        stdout: TextIO | None = None,
-        stderr: TextIO | None = None,
+        stdin: BinaryIO | None = None,
+        stdout: BinaryIO | None = None,
+        stderr: BinaryIO | None = None,
     ):
         """Initialize stdio adapter.
 
         Args:
-            stdin: Input stream (default: sys.stdin)
-            stdout: Output stream (default: sys.stdout)
-            stderr: Error stream (default: sys.stderr)
+            stdin: Binary input stream (default: sys.stdin.buffer)
+            stdout: Binary output stream (default: sys.stdout.buffer)
+            stderr: Binary error stream (default: sys.stderr.buffer)
         """
-        self._stdin = stdin or sys.stdin
-        self._stdout = stdout or sys.stdout
-        self._stderr = stderr or sys.stderr
+        self._stdin = _ensure_binary_stream(stdin, 0, "rb")
+        self._stdout = _ensure_binary_stream(stdout, 1, "wb")
+        self._stderr = _ensure_binary_stream(stderr, 2, "wb")
+
+        # Wrap binary streams with UTF-8 text readers/writers
+        self._reader = io.TextIOWrapper(
+            self._stdin,
+            encoding=ENCODING,
+            errors="replace",  # Replace invalid UTF-8 with replacement char
+            newline="",  # Universal newline mode - accepts LF, CRLF, CR
+        )
+        self._writer = io.TextIOWrapper(
+            self._stdout,
+            encoding=ENCODING,
+            errors="replace",
+            newline=NEWLINE,  # Always output LF
+            write_through=True,  # Don't buffer
+        )
+        self._error_writer = io.TextIOWrapper(
+            self._stderr,
+            encoding=ENCODING,
+            errors="replace",
+            newline=NEWLINE,
+            write_through=True,
+        )
+
         self._handler = CommandHandler(session_manager)
         self._running = False
 
@@ -79,7 +145,7 @@ class StdioProtocolAdapter:
         self._running = True
 
         # Send connected event
-        await self._send_event(Event.connected({"transport": "stdio"}))
+        await self._send_event(Event.connected({"transport": "stdio", "encoding": ENCODING}))
 
         try:
             # Process stdin line by line
@@ -88,9 +154,14 @@ class StdioProtocolAdapter:
                 if line is None:
                     break  # EOF
 
+                # Normalize line endings and strip whitespace
                 line = line.strip()
                 if not line:
                     continue  # Skip empty lines
+
+                # Skip UTF-8 BOM if present at start
+                if line.startswith("\ufeff"):
+                    line = line[1:]
 
                 await self._process_line(line)
 
@@ -111,7 +182,7 @@ class StdioProtocolAdapter:
         loop = asyncio.get_event_loop()
         try:
             # Run blocking readline in executor
-            line = await loop.run_in_executor(None, self._stdin.readline)
+            line = await loop.run_in_executor(None, self._reader.readline)
             return line if line else None
         except Exception:
             return None
@@ -119,8 +190,8 @@ class StdioProtocolAdapter:
     async def _process_line(self, line: str) -> None:
         """Process a single input line."""
         try:
-            # Parse command
-            command = Command.model_validate_json(line)
+            # Parse command from UTF-8 JSON
+            command = Command.model_validate_json(line.encode(ENCODING))
             logger.debug(f"Received command: {command.cmd} (id={command.id})")
 
             # Process and stream events
@@ -138,26 +209,28 @@ class StdioProtocolAdapter:
             self._log_error(f"Parse error: {e}")
 
     async def _send_event(self, event: Event) -> None:
-        """Send an event to stdout."""
+        """Send an event to stdout as UTF-8 JSON."""
         try:
-            json_line = event.model_dump_json()
-            self._stdout.write(json_line + "\n")
-            self._stdout.flush()
+            # Serialize to JSON with ensure_ascii=False for proper Unicode
+            json_str = event.model_dump_json()
+            self._writer.write(json_str + NEWLINE)
+            self._writer.flush()
         except Exception as e:
             self._log_error(f"Failed to send event: {e}")
 
     def _log_error(self, message: str) -> None:
         """Log error to stderr."""
-        self._stderr.write(f"ERROR: {message}\n")
-        self._stderr.flush()
+        self._error_writer.write(f"ERROR: {message}{NEWLINE}")
+        self._error_writer.flush()
 
 
 async def run_stdio_adapter() -> None:
     """Run the stdio adapter as main entry point."""
+    # Configure logging to stderr (protocol goes to stdout)
     logging.basicConfig(
         level=logging.WARNING,
         format="%(levelname)s: %(message)s",
-        stream=sys.stderr,  # Logs go to stderr, protocol to stdout
+        stream=sys.stderr,
     )
 
     adapter = StdioProtocolAdapter()
@@ -166,6 +239,14 @@ async def run_stdio_adapter() -> None:
 
 def main() -> None:
     """Synchronous entry point for CLI."""
+    # On Windows, ensure binary mode for stdin/stdout
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+        msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+        msvcrt.setmode(sys.stderr.fileno(), os.O_BINARY)
+
     asyncio.run(run_stdio_adapter())
 
 
