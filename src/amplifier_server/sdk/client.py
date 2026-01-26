@@ -4,6 +4,8 @@ Supports both HTTP (remote) and embedded (in-process) modes.
 The same client interface works regardless of connection mode.
 """
 
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -30,7 +32,7 @@ class FetchProtocol(Protocol):
 class SessionAPI:
     """Session operations."""
 
-    _client: "AmplifierClient"
+    _client: AmplifierClient
 
     async def list(self) -> list[SessionInfo]:
         """List all sessions."""
@@ -87,7 +89,7 @@ class SessionAPI:
 class EventAPI:
     """Event subscription operations."""
 
-    _client: "AmplifierClient"
+    _client: AmplifierClient
 
     async def subscribe(self) -> AsyncIterator[Event]:
         """Subscribe to the SSE event stream.
@@ -135,7 +137,8 @@ class AmplifierClient:
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(base_url=self.base_url)
 
-        response = await self._http_client.request(method, url, json=json)
+        client = self._http_client
+        response = await client.request(method, url, json=json)
         response.raise_for_status()
         return response
 
