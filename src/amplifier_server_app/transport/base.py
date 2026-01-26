@@ -19,8 +19,6 @@ class TransportMode(str, Enum):
     """Available transport modes."""
 
     SSE = "sse"  # Server-Sent Events (HTTP/1.1, HTTP/2)
-    WEBSOCKET = "websocket"  # WebSocket
-    WEBTRANSPORT = "webtransport"  # HTTP/3 WebTransport
     STDIO = "stdio"  # stdin/stdout (for subprocess/IPC)
 
 
