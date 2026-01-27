@@ -165,8 +165,10 @@ class CommandHandler:
 
     async def _session_list(self, command: Command) -> AsyncIterator[Event]:
         """Handle session.list command."""
-        sessions = await self._sessions.list_sessions()
-        yield Event.result(command.id, data={"sessions": sessions})
+        # Get both active and saved sessions
+        active = await self._sessions.list_active()
+        saved = self._sessions.list_saved()
+        yield Event.result(command.id, data={"active": active, "saved": saved})
 
     async def _session_delete(self, command: Command) -> AsyncIterator[Event]:
         """Handle session.delete command."""

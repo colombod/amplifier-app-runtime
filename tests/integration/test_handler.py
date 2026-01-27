@@ -159,14 +159,15 @@ class TestSessionList:
 
     @pytest.mark.anyio
     async def test_list_empty(self, handler: CommandHandler):
-        """List should return empty when no sessions."""
+        """List should return empty when no active sessions."""
         cmd = Command.create(CommandType.SESSION_LIST)
 
         events = await collect_events(handler, cmd)
 
         assert len(events) == 1
         assert events[0].type == "result"
-        assert events[0].data["sessions"] == []
+        assert events[0].data["active"] == []
+        assert "saved" in events[0].data
 
     @pytest.mark.anyio
     async def test_list_with_sessions(self, handler: CommandHandler):
@@ -178,7 +179,8 @@ class TestSessionList:
         cmd = Command.create(CommandType.SESSION_LIST)
         events = await collect_events(handler, cmd)
 
-        assert len(events[0].data["sessions"]) == 2
+        # Active sessions should contain the two we just created
+        assert len(events[0].data["active"]) == 2
 
 
 class TestSessionDelete:

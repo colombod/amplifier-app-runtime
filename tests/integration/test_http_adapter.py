@@ -78,8 +78,9 @@ class TestSessionEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        assert "sessions" in data
-        assert isinstance(data["sessions"], list)
+        assert "active" in data
+        assert "saved" in data
+        assert isinstance(data["active"], list)
 
     def test_get_session(self, client: TestClient):
         """GET /session/{id} should return session info."""

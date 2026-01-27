@@ -1,23 +1,27 @@
-"""Protocol implementations for Amplifier Server.
+"""Protocol implementations for amplifier-core integration.
 
-These protocols bridge the gap between Amplifier's core abstractions
-and the transport layer, enabling:
-- Real-time event streaming to clients
-- User approval handling
-- Display notifications
-- Agent spawning with event forwarding
-
-Aligned with amplifier-web patterns for compatibility.
+These implement the interfaces expected by amplifier-core for:
+- Streaming events to clients
+- Handling approval requests
+- Displaying notifications
+- Spawning sub-sessions
 """
 
-from .approval import ApprovalSystem
-from .display import DisplaySystem
-from .hooks import StreamingHook
-from .spawn import SpawnManager
+from .approval import ServerApprovalSystem
+from .display import ServerDisplaySystem
+from .spawn import ServerSpawnManager, register_spawn_capability
+from .streaming import (
+    ServerStreamingHook,
+    get_events_to_capture,
+    register_streaming_hook,
+)
 
 __all__ = [
-    "ApprovalSystem",
-    "DisplaySystem",
-    "StreamingHook",
-    "SpawnManager",
+    "ServerApprovalSystem",
+    "ServerDisplaySystem",
+    "ServerSpawnManager",
+    "ServerStreamingHook",
+    "get_events_to_capture",
+    "register_spawn_capability",
+    "register_streaming_hook",
 ]

@@ -1,122 +1,140 @@
-"""Display System Protocol.
+"""Display system for server-side notifications.
 
-Handles notifications and display messages to the client.
-Used by tools and hooks to show status, warnings, and info to users.
+Provides the display interface required by amplifier-core for
+user notifications and status updates.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Awaitable
+from typing import Any
 
-if TYPE_CHECKING:
-    from ..transport.base import Event
+from ..transport.base import Event
 
 logger = logging.getLogger(__name__)
 
 
-class DisplaySystem:
-    """Display system for sending notifications to clients.
+class ServerDisplaySystem:
+    """Display system that sends notifications to connected clients.
 
-    Provides a unified interface for tools and hooks to display
-    messages to users, regardless of the transport being used.
-
-    Levels:
-    - info: General information
-    - warning: Non-fatal warnings
-    - error: Error messages
-    - debug: Debug information (may be filtered)
+    Implements the display system interface expected by amplifier-core.
+    Notifications are sent as events to clients via the send function.
     """
 
     def __init__(
         self,
-        send_fn: Callable[[Event], Coroutine[Any, Any, None]] | None = None,
-    ):
-        """Initialize display system.
+        send_fn: Callable[[Event], Awaitable[None]] | None = None,
+    ) -> None:
+        """Initialize the display system.
 
         Args:
-            send_fn: Async function to send events to client.
-                     If None, messages are logged only.
+            send_fn: Async function to send events to the client
         """
-        self._send = send_fn
-        self._buffer: list[dict[str, Any]] = []
+        self._send_fn = send_fn
 
-    async def show(
+    def set_send_fn(self, send_fn: Callable[[Event], Awaitable[None]]) -> None:
+        """Set the send function after initialization."""
+        self._send_fn = send_fn
+
+    async def notify(
         self,
         message: str,
         level: str = "info",
-        source: str | None = None,
-        **kwargs: Any,
+        title: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
-        """Display a message to the user.
+        """Send a notification to the user.
 
         Args:
-            message: The message text
-            level: Message level (info, warning, error, debug)
-            source: Optional source identifier (tool name, hook name, etc.)
-            **kwargs: Additional metadata
+            message: The notification message
+            level: Notification level (info, warning, error, success)
+            title: Optional title for the notification
+            details: Optional additional details
         """
-        display_data = {
-            "type": "display_message",
-            "level": level,
-            "message": message,
-            "source": source,
-            **kwargs,
-        }
-
-        # Log locally
-        log_level = getattr(logging, level.upper(), logging.INFO)
-        logger.log(log_level, f"[{source or 'display'}] {message}")
-
-        # Send to client if connected
-        if self._send:
-            from ..transport.base import Event
-
-            await self._send(Event(type="display_message", properties=display_data))
-        else:
-            # Buffer for later delivery
-            self._buffer.append(display_data)
-
-    async def info(self, message: str, **kwargs: Any) -> None:
-        """Display an info message."""
-        await self.show(message, level="info", **kwargs)
-
-    async def warning(self, message: str, **kwargs: Any) -> None:
-        """Display a warning message."""
-        await self.show(message, level="warning", **kwargs)
-
-    async def error(self, message: str, **kwargs: Any) -> None:
-        """Display an error message."""
-        await self.show(message, level="error", **kwargs)
-
-    async def debug(self, message: str, **kwargs: Any) -> None:
-        """Display a debug message."""
-        await self.show(message, level="debug", **kwargs)
-
-    def set_send_function(
-        self,
-        send_fn: Callable[[Event], Coroutine[Any, Any, None]],
-    ) -> None:
-        """Set or update the send function.
-
-        Args:
-            send_fn: Async function to send events
-        """
-        self._send = send_fn
-
-    async def flush_buffer(self) -> None:
-        """Send any buffered messages."""
-        if not self._send:
+        if not self._send_fn:
+            logger.debug(f"[{level}] {message}")
             return
 
-        from ..transport.base import Event
+        try:
+            event = Event(
+                type="user:notification",
+                properties={
+                    "message": message,
+                    "level": level,
+                    "title": title,
+                    "details": details,
+                },
+            )
+            await self._send_fn(event)
+        except Exception as e:
+            logger.warning(f"Failed to send notification: {e}")
 
-        for data in self._buffer:
-            await self._send(Event(type="display_message", properties=data))
+    async def info(self, message: str, **kwargs: Any) -> None:
+        """Send an info notification."""
+        await self.notify(message, level="info", **kwargs)
 
-        self._buffer.clear()
+    async def warning(self, message: str, **kwargs: Any) -> None:
+        """Send a warning notification."""
+        await self.notify(message, level="warning", **kwargs)
 
-    def get_buffered_messages(self) -> list[dict[str, Any]]:
-        """Get buffered messages without clearing."""
-        return list(self._buffer)
+    async def error(self, message: str, **kwargs: Any) -> None:
+        """Send an error notification."""
+        await self.notify(message, level="error", **kwargs)
+
+    async def success(self, message: str, **kwargs: Any) -> None:
+        """Send a success notification."""
+        await self.notify(message, level="success", **kwargs)
+
+    async def status(self, message: str, **kwargs: Any) -> None:
+        """Send a status update.
+
+        Status updates are typically transient UI states like "Loading..."
+        """
+        if not self._send_fn:
+            logger.debug(f"[status] {message}")
+            return
+
+        try:
+            event = Event(
+                type="status:update",
+                properties={
+                    "message": message,
+                    **kwargs,
+                },
+            )
+            await self._send_fn(event)
+        except Exception as e:
+            logger.warning(f"Failed to send status: {e}")
+
+    async def progress(
+        self,
+        current: int,
+        total: int,
+        message: str | None = None,
+    ) -> None:
+        """Send a progress update.
+
+        Args:
+            current: Current progress value
+            total: Total expected value
+            message: Optional progress message
+        """
+        if not self._send_fn:
+            pct = (current / total * 100) if total > 0 else 0
+            logger.debug(f"[progress] {pct:.1f}% - {message or ''}")
+            return
+
+        try:
+            event = Event(
+                type="progress:update",
+                properties={
+                    "current": current,
+                    "total": total,
+                    "message": message,
+                    "percentage": (current / total * 100) if total > 0 else 0,
+                },
+            )
+            await self._send_fn(event)
+        except Exception as e:
+            logger.warning(f"Failed to send progress: {e}")

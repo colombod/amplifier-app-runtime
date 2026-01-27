@@ -1,7 +1,7 @@
-"""Approval System Protocol.
+"""Approval system for server-side approval handling.
 
-Handles user approval requests for tool execution and sensitive operations.
-Provides async/await interface for requesting and receiving approvals.
+Provides the approval interface required by amplifier-core for tool
+execution approvals and other user confirmation requests.
 """
 
 from __future__ import annotations
@@ -9,229 +9,213 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Awaitable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from ..transport.base import Event
+from ..transport.base import Event
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ApprovalRequest:
-    """A pending approval request."""
+class PendingApproval:
+    """A pending approval request waiting for user response."""
 
     request_id: str
-    prompt: str
+    tool_name: str
+    tool_args: dict[str, Any]
     options: list[str]
-    timeout: float
-    default: str | None
-    future: asyncio.Future[str] = field(default_factory=lambda: asyncio.Future())
+    future: asyncio.Future[str]
     created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
 
 
-class ApprovalSystem:
-    """Approval system for requesting user consent.
+class ServerApprovalSystem:
+    """Approval system that sends approval requests to connected clients.
 
-    Used by tools and hooks to pause execution and wait for
-    user approval before proceeding with sensitive operations.
-
-    Example:
-        approval = ApprovalSystem(send_fn=transport.send)
-
-        # In a tool
-        choice = await approval.request(
-            "Delete 10 files?",
-            options=["yes", "no", "preview"],
-            default="no",
-            timeout=60.0,
-        )
-
-        if choice == "yes":
-            # Proceed with deletion
-            ...
+    Implements the approval system interface expected by amplifier-core.
+    Approval requests are sent as events to clients, and responses are
+    collected via the handle_response method.
     """
 
     def __init__(
         self,
-        send_fn: Callable[[Event], Coroutine[Any, Any, None]] | None = None,
-    ):
-        """Initialize approval system.
+        send_fn: Callable[[Event], Awaitable[None]] | None = None,
+        timeout: float = 300.0,
+    ) -> None:
+        """Initialize the approval system.
 
         Args:
-            send_fn: Async function to send events to client
+            send_fn: Async function to send events to the client
+            timeout: Default timeout for approval requests (seconds)
         """
-        self._send = send_fn
-        self._pending: dict[str, ApprovalRequest] = {}
+        self._send_fn = send_fn
+        self._timeout = timeout
+        self._pending: dict[str, PendingApproval] = {}
 
-    async def request(
+    def set_send_fn(self, send_fn: Callable[[Event], Awaitable[None]]) -> None:
+        """Set the send function after initialization."""
+        self._send_fn = send_fn
+
+    async def request_approval(
         self,
-        prompt: str,
+        tool_name: str,
+        tool_args: dict[str, Any],
         options: list[str] | None = None,
-        default: str | None = None,
-        timeout: float = 30.0,
-        context: dict[str, Any] | None = None,
+        message: str | None = None,
+        timeout: float | None = None,
     ) -> str:
         """Request approval from the user.
 
         Args:
-            prompt: The question/prompt to display
-            options: Available choices (default: ["yes", "no"])
-            default: Default option if timeout (default: None = raises)
-            timeout: Timeout in seconds
-            context: Additional context to send with request
+            tool_name: Name of the tool requesting approval
+            tool_args: Arguments to the tool
+            options: Available choices (default: ["approve", "deny"])
+            message: Optional message to display
+            timeout: Timeout for this request (uses default if not specified)
 
         Returns:
             The user's chosen option
 
         Raises:
-            asyncio.TimeoutError: If timeout and no default
-            RuntimeError: If no send function configured
+            asyncio.TimeoutError: If approval times out
+            RuntimeError: If no send function is configured
         """
-        if options is None:
-            options = ["yes", "no"]
+        if not self._send_fn:
+            logger.warning("No send function configured, auto-denying approval")
+            return "deny"
 
-        request_id = str(uuid.uuid4())[:8]
+        options = options or ["approve", "deny"]
+        timeout = timeout or self._timeout
+        request_id = f"approval_{uuid.uuid4().hex[:12]}"
 
-        # Create pending request
-        request = ApprovalRequest(
+        # Create future for response
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[str] = loop.create_future()
+
+        # Store pending request
+        pending = PendingApproval(
             request_id=request_id,
-            prompt=prompt,
+            tool_name=tool_name,
+            tool_args=tool_args,
             options=options,
-            timeout=timeout,
-            default=default,
+            future=future,
         )
-        self._pending[request_id] = request
+        self._pending[request_id] = pending
 
-        # Send approval request to client
-        if self._send:
-            from ..transport.base import Event
-
-            await self._send(
-                Event(
-                    type="approval:required",
-                    properties={
-                        "request_id": request_id,
-                        "prompt": prompt,
-                        "options": options,
-                        "timeout": timeout,
-                        "default": default,
-                        **(context or {}),
-                    },
-                )
-            )
-
-        logger.info(f"Approval requested: {prompt} (id={request_id})")
-
-        # Wait for response
         try:
-            choice = await asyncio.wait_for(request.future, timeout=timeout)
-            logger.info(f"Approval {request_id}: user chose '{choice}'")
-            return choice
+            # Send approval request to client
+            event = Event(
+                type="approval:required",
+                properties={
+                    "request_id": request_id,
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "options": options,
+                    "message": message or f"Approve execution of {tool_name}?",
+                    "timeout": timeout,
+                },
+            )
+            await self._send_fn(event)
+            logger.debug(f"Sent approval request {request_id} for {tool_name}")
 
-        except TimeoutError:
-            logger.warning(f"Approval {request_id}: timeout")
-            self._pending.pop(request_id, None)
+            # Wait for response with timeout
+            result = await asyncio.wait_for(future, timeout=timeout)
+            logger.debug(f"Received approval response for {request_id}: {result}")
 
-            if default is not None:
-                # Send timeout event with default choice
-                if self._send:
-                    from ..transport.base import Event
+            # Send confirmation event
+            confirmation_event = Event(
+                type="approval:granted" if result == "approve" else "approval:denied",
+                properties={
+                    "request_id": request_id,
+                    "choice": result,
+                },
+            )
+            await self._send_fn(confirmation_event)
 
-                    await self._send(
-                        Event(
-                            type="approval:granted",
-                            properties={
-                                "request_id": request_id,
-                                "choice": default,
-                                "reason": "timeout_default",
-                            },
-                        )
+            return result
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Approval request {request_id} timed out")
+            # Send timeout event
+            if self._send_fn:
+                await self._send_fn(
+                    Event(
+                        type="approval:denied",
+                        properties={
+                            "request_id": request_id,
+                            "choice": "deny",
+                            "reason": "timeout",
+                        },
                     )
-                return default
-
+                )
             raise
 
         finally:
+            # Clean up pending request
             self._pending.pop(request_id, None)
 
     def handle_response(self, request_id: str, choice: str) -> bool:
         """Handle an approval response from the client.
 
         Args:
-            request_id: The request ID from the approval request
+            request_id: The approval request ID
             choice: The user's chosen option
 
         Returns:
-            True if response was handled, False if request not found
+            True if the response was handled, False if request not found
         """
-        request = self._pending.get(request_id)
-        if not request:
-            logger.warning(f"Unknown approval request: {request_id}")
+        pending = self._pending.get(request_id)
+        if not pending:
+            logger.warning(f"No pending approval for request {request_id}")
             return False
 
-        if choice not in request.options:
+        if pending.future.done():
+            logger.warning(f"Approval {request_id} already completed")
+            return False
+
+        # Validate choice
+        if choice not in pending.options:
             logger.warning(
                 f"Invalid choice '{choice}' for approval {request_id}, "
-                f"valid options: {request.options}"
+                f"expected one of {pending.options}"
             )
-            return False
+            # Still accept it but log the warning
+            pass
 
-        # Complete the future
-        if not request.future.done():
-            request.future.set_result(choice)
-
+        pending.future.set_result(choice)
+        logger.debug(f"Handled approval response for {request_id}: {choice}")
         return True
 
-    def cancel(self, request_id: str, reason: str = "cancelled") -> bool:
-        """Cancel a pending approval request.
-
-        Args:
-            request_id: The request ID to cancel
-            reason: Cancellation reason
-
-        Returns:
-            True if cancelled, False if not found
-        """
-        request = self._pending.pop(request_id, None)
-        if not request:
-            return False
-
-        if not request.future.done():
-            request.future.cancel()
-
-        logger.info(f"Approval {request_id} cancelled: {reason}")
-        return True
-
-    def cancel_all(self, reason: str = "session_ended") -> int:
-        """Cancel all pending approvals.
-
-        Args:
-            reason: Cancellation reason
-
-        Returns:
-            Number of approvals cancelled
-        """
-        count = 0
-        for request_id in list(self._pending.keys()):
-            if self.cancel(request_id, reason):
-                count += 1
-        return count
-
-    def set_send_function(
-        self,
-        send_fn: Callable[[Event], Coroutine[Any, Any, None]],
-    ) -> None:
-        """Set or update the send function."""
-        self._send = send_fn
-
-    @property
-    def pending_count(self) -> int:
-        """Number of pending approval requests."""
+    def get_pending_count(self) -> int:
+        """Get the number of pending approval requests."""
         return len(self._pending)
 
-    def get_pending(self, request_id: str) -> ApprovalRequest | None:
-        """Get a pending request by ID."""
-        return self._pending.get(request_id)
+    def get_pending_requests(self) -> list[dict[str, Any]]:
+        """Get list of pending approval requests.
+
+        Returns:
+            List of pending request info dicts
+        """
+        return [
+            {
+                "request_id": p.request_id,
+                "tool_name": p.tool_name,
+                "options": p.options,
+            }
+            for p in self._pending.values()
+        ]
+
+    def cancel_all(self) -> int:
+        """Cancel all pending approval requests.
+
+        Returns:
+            Number of requests cancelled
+        """
+        count = 0
+        for pending in list(self._pending.values()):
+            if not pending.future.done():
+                pending.future.set_result("deny")
+                count += 1
+        self._pending.clear()
+        return count

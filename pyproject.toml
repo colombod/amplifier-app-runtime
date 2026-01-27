@@ -5,9 +5,7 @@ description = "Amplifier backend server - HTTP API with event streaming for AI a
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [
-    { name = "colombod" }
-]
+authors = [{ name = "Microsoft MADE:Explorations Team" }]
 keywords = ["amplifier", "ai", "agent", "server"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -25,6 +23,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "click>=8.0.0",
     "rich>=13.0.0",
+    "amplifier-core",
+    "amplifier-foundation",
 ]
 
 [project.optional-dependencies]
@@ -32,8 +32,27 @@ http3 = [
     "aioquic>=1.0.0",
     "hypercorn[h3]>=0.17.0",
 ]
+
+[project.scripts]
+amplifier-server = "amplifier_server_app.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amplifier_server_app"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
     "anyio[trio]>=4.0.0",
     "pytest-anyio>=0.0.0",
     "httpx>=0.27.0",
@@ -41,15 +60,9 @@ dev = [
     "pyright>=1.1.380",
 ]
 
-[project.scripts]
-amplifier-server = "amplifier_server_app.cli:main"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/amplifier_server_app"]
+[tool.uv.sources]
+amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
 
 [tool.ruff]
 line-length = 100
@@ -65,4 +78,5 @@ include = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--import-mode=importlib"
 filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,303 +1,230 @@
-"""Spawn Manager Protocol.
+"""Spawn manager for agent delegation.
 
-Handles agent spawning (sub-sessions) with event forwarding.
-When a parent session spawns a child agent, events from the child
-are forwarded to the parent's client with proper nesting context.
+Handles spawning sub-sessions for agent delegation via the task tool.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import uuid
-from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..transport.base import Event
+    from amplifier_foundation import PreparedBundle
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class SpawnedSession:
-    """Metadata for a spawned child session."""
+class ServerSpawnManager:
+    """Manages spawning of sub-sessions for agent delegation.
 
-    child_session_id: str
-    parent_session_id: str
-    parent_tool_call_id: str | None
-    agent_name: str
-    nesting_depth: int
-    created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
-    status: str = "running"  # running, completed, error, cancelled
-
-
-class SpawnManager:
-    """Manager for spawned agent sessions with event forwarding.
-
-    Handles the lifecycle of child sessions spawned by parent sessions.
-    Forwards events from children to parents with proper context for
-    nested agent visualization in the UI.
-
-    Key features:
-    - Tracks parent-child relationships
-    - Forwards child events to parent's transport
-    - Adds nesting context (child_session_id, parent_tool_call_id, depth)
-    - Handles cleanup on completion/error
-
-    Example:
-        spawn_mgr = SpawnManager(send_fn=transport.send)
-
-        # When task tool spawns an agent
-        child_id = await spawn_mgr.spawn(
-            parent_session_id="sess_123",
-            agent_name="foundation:explorer",
-            parent_tool_call_id="tool_456",
-        )
-
-        # Child events are automatically forwarded with context
-        # Client sees: {
-        #   "type": "content_delta",
-        #   "child_session_id": "sess_789",
-        #   "parent_tool_call_id": "tool_456",
-        #   "nesting_depth": 1,
-        #   ...
-        # }
+    This enables the task tool to spawn sub-agents. Events from child
+    sessions are forwarded to the parent session's hooks for streaming.
     """
 
-    def __init__(
-        self,
-        send_fn: Callable[[Event], Coroutine[Any, Any, None]] | None = None,
-    ):
-        """Initialize spawn manager.
-
-        Args:
-            send_fn: Async function to send events to client
-        """
-        self._send = send_fn
-        self._sessions: dict[str, SpawnedSession] = {}
-        self._children: dict[str, list[str]] = {}  # parent_id -> [child_ids]
+    def __init__(self) -> None:
+        """Initialize the spawn manager."""
+        self._active_spawns: dict[str, Any] = {}
 
     async def spawn(
         self,
-        parent_session_id: str,
         agent_name: str,
+        instruction: str,
+        parent_session: Any,
+        agent_configs: dict[str, dict],
+        prepared_bundle: "PreparedBundle",
         parent_tool_call_id: str | None = None,
-        instruction: str | None = None,
-    ) -> str:
-        """Register a new spawned session.
+        sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
+        parent_messages: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+    ) -> dict:
+        """Spawn a sub-session for agent delegation.
 
         Args:
-            parent_session_id: ID of the parent session
-            agent_name: Name of the agent being spawned
-            parent_tool_call_id: Tool call ID that triggered the spawn
-            instruction: Optional instruction for the agent
+            agent_name: Name of the agent to spawn
+            instruction: Task instruction for the agent
+            parent_session: The parent AmplifierSession
+            agent_configs: Agent configurations from the bundle
+            prepared_bundle: The PreparedBundle for creating sessions
+            parent_tool_call_id: Optional tool call ID for correlation
+            sub_session_id: Optional session ID to use
+            tool_inheritance: Tools to inherit from parent
+            hook_inheritance: Hooks to inherit from parent
+            orchestrator_config: Optional orchestrator configuration
+            parent_messages: Optional context messages to pass
+            provider_override: Optional provider to use
+            model_override: Optional model to use
 
         Returns:
-            The new child session ID
+            Result dict with status, result, and session_id
         """
-        child_session_id = f"spawn_{uuid.uuid4().hex[:12]}"
+        import uuid
 
-        # Calculate nesting depth
-        parent = self._sessions.get(parent_session_id)
-        nesting_depth = (parent.nesting_depth + 1) if parent else 1
+        # Generate sub-session ID if not provided
+        if not sub_session_id:
+            sub_session_id = f"sub_{uuid.uuid4().hex[:12]}"
 
-        # Create session record
-        session = SpawnedSession(
-            child_session_id=child_session_id,
-            parent_session_id=parent_session_id,
-            parent_tool_call_id=parent_tool_call_id,
-            agent_name=agent_name,
-            nesting_depth=nesting_depth,
-        )
-        self._sessions[child_session_id] = session
+        logger.info(f"Spawning agent '{agent_name}' with session {sub_session_id}")
 
-        # Track parent-child relationship
-        if parent_session_id not in self._children:
-            self._children[parent_session_id] = []
-        self._children[parent_session_id].append(child_session_id)
+        try:
+            # Get agent config
+            agent_config = agent_configs.get(agent_name)
+            if not agent_config:
+                return {
+                    "status": "error",
+                    "error": f"Unknown agent: {agent_name}",
+                    "session_id": sub_session_id,
+                }
 
-        logger.info(
-            f"Spawned session {child_session_id} "
-            f"(agent={agent_name}, parent={parent_session_id}, depth={nesting_depth})"
-        )
+            # Create event forwarder to parent hooks
+            def create_event_forwarder():
+                """Create a hook that forwards events to parent session."""
+                parent_hooks = parent_session.coordinator.hooks
 
-        # Notify client of spawn
-        if self._send:
-            from ..transport.base import Event
+                async def forward_event(event_type: str, data: dict) -> dict:
+                    # Annotate with spawn context
+                    data = dict(data)
+                    data["_spawned_from"] = parent_session.session_id
+                    data["_spawn_session_id"] = sub_session_id
+                    data["_agent_name"] = agent_name
 
-            await self._send(
-                Event(
-                    type="session:fork",
-                    properties={
-                        "child_session_id": child_session_id,
-                        "parent_session_id": parent_session_id,
-                        "parent_tool_call_id": parent_tool_call_id,
-                        "agent_name": agent_name,
-                        "nesting_depth": nesting_depth,
-                        "instruction": instruction,
-                    },
-                )
+                    # Forward to parent hooks
+                    if parent_hooks:
+                        await parent_hooks.emit(event_type, data)
+                    return {}
+
+                return forward_event
+
+            # Create child session
+            child_session = await prepared_bundle.create_session(
+                session_id=sub_session_id,
+                parent_id=parent_session.session_id,
+                agent_name=agent_name,
             )
 
-        return child_session_id
+            # Register event forwarder
+            forwarder = create_event_forwarder()
+            child_hooks = child_session.coordinator.hooks
+            if child_hooks:
+                # Forward key events to parent
+                for event in [
+                    "content_block:start",
+                    "content_block:delta",
+                    "content_block:end",
+                    "tool:pre",
+                    "tool:post",
+                    "tool:error",
+                ]:
+                    child_hooks.register(
+                        event=event,
+                        handler=forwarder,
+                        priority=50,
+                        name=f"parent-forward:{event}",
+                    )
 
-    async def forward_event(
-        self,
-        child_session_id: str,
-        event_type: str,
-        event_data: dict[str, Any],
-    ) -> None:
-        """Forward an event from a child session to the parent's client.
+            # Track active spawn
+            self._active_spawns[sub_session_id] = child_session
 
-        Args:
-            child_session_id: The child session that emitted the event
-            event_type: The event type
-            event_data: The event data
-        """
-        session = self._sessions.get(child_session_id)
-        if not session:
-            logger.warning(f"Unknown child session: {child_session_id}")
-            return
+            # Execute the instruction
+            logger.info(f"Executing instruction in spawned session {sub_session_id}")
+            result = await child_session.execute(instruction)
 
-        if not self._send:
-            return
+            # Clean up
+            self._active_spawns.pop(sub_session_id, None)
 
-        from ..transport.base import Event
+            return {
+                "status": "success",
+                "result": result,
+                "session_id": sub_session_id,
+            }
 
-        # Add nesting context to event
-        enriched_data = {
-            **event_data,
-            "child_session_id": child_session_id,
-            "parent_session_id": session.parent_session_id,
-            "parent_tool_call_id": session.parent_tool_call_id,
-            "nesting_depth": session.nesting_depth,
-            "agent_name": session.agent_name,
-        }
+        except Exception as e:
+            logger.error(f"Spawn failed for agent '{agent_name}': {e}")
+            self._active_spawns.pop(sub_session_id, None)
+            return {
+                "status": "error",
+                "error": str(e),
+                "session_id": sub_session_id,
+            }
 
-        await self._send(Event(type=event_type, properties=enriched_data))
+    def get_active_spawns(self) -> list[str]:
+        """Get list of active spawn session IDs."""
+        return list(self._active_spawns.keys())
 
-    async def complete(
-        self,
-        child_session_id: str,
-        result: Any = None,
-        error: str | None = None,
-    ) -> None:
-        """Mark a spawned session as completed.
-
-        Args:
-            child_session_id: The child session ID
-            result: Optional result from the session
-            error: Optional error message if failed
-        """
-        session = self._sessions.get(child_session_id)
-        if not session:
-            logger.warning(f"Unknown child session: {child_session_id}")
-            return
-
-        session.status = "error" if error else "completed"
-
-        logger.info(
-            f"Session {child_session_id} completed (status={session.status}, error={error})"
-        )
-
-        # Notify client
-        if self._send:
-            from ..transport.base import Event
-
-            await self._send(
-                Event(
-                    type="session:end",
-                    properties={
-                        "child_session_id": child_session_id,
-                        "parent_session_id": session.parent_session_id,
-                        "parent_tool_call_id": session.parent_tool_call_id,
-                        "nesting_depth": session.nesting_depth,
-                        "status": session.status,
-                        "result": result,
-                        "error": error,
-                    },
-                )
-            )
-
-    def cancel(self, child_session_id: str) -> bool:
-        """Cancel a spawned session.
+    async def cancel_spawn(self, session_id: str) -> bool:
+        """Cancel an active spawn.
 
         Args:
-            child_session_id: The child session ID
+            session_id: The spawn session ID to cancel
 
         Returns:
             True if cancelled, False if not found
         """
-        session = self._sessions.get(child_session_id)
+        session = self._active_spawns.get(session_id)
         if not session:
             return False
 
-        session.status = "cancelled"
-        logger.info(f"Session {child_session_id} cancelled")
-        return True
+        try:
+            if hasattr(session, "cancel"):
+                await session.cancel()
+            return True
+        except Exception as e:
+            logger.warning(f"Error cancelling spawn {session_id}: {e}")
+            return False
 
-    def cancel_children(self, parent_session_id: str) -> int:
-        """Cancel all children of a parent session.
 
-        Args:
-            parent_session_id: The parent session ID
+def register_spawn_capability(
+    session: Any,
+    prepared_bundle: "PreparedBundle",
+    spawn_manager: ServerSpawnManager | None = None,
+) -> ServerSpawnManager:
+    """Register session spawning capability on a session.
 
-        Returns:
-            Number of children cancelled
-        """
-        child_ids = self._children.get(parent_session_id, [])
-        count = 0
-        for child_id in child_ids:
-            if self.cancel(child_id):
-                count += 1
-        return count
+    Args:
+        session: The AmplifierSession to register on
+        prepared_bundle: The PreparedBundle for creating sessions
+        spawn_manager: Optional existing spawn manager to use
 
-    def get_session(self, session_id: str) -> SpawnedSession | None:
-        """Get a spawned session by ID."""
-        return self._sessions.get(session_id)
+    Returns:
+        The spawn manager instance
+    """
+    if spawn_manager is None:
+        spawn_manager = ServerSpawnManager()
 
-    def get_children(self, parent_session_id: str) -> list[SpawnedSession]:
-        """Get all children of a parent session."""
-        child_ids = self._children.get(parent_session_id, [])
-        return [self._sessions[cid] for cid in child_ids if cid in self._sessions]
+    async def spawn_capability(
+        agent_name: str,
+        instruction: str,
+        parent_session: Any,
+        agent_configs: dict[str, dict],
+        sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
+        parent_messages: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        parent_tool_call_id: str | None = None,
+    ) -> dict:
+        return await spawn_manager.spawn(
+            agent_name=agent_name,
+            instruction=instruction,
+            parent_session=parent_session,
+            agent_configs=agent_configs,
+            prepared_bundle=prepared_bundle,
+            parent_tool_call_id=parent_tool_call_id,
+            sub_session_id=sub_session_id,
+            tool_inheritance=tool_inheritance,
+            hook_inheritance=hook_inheritance,
+            orchestrator_config=orchestrator_config,
+            parent_messages=parent_messages,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
 
-    def get_nesting_depth(self, session_id: str) -> int:
-        """Get the nesting depth for a session."""
-        session = self._sessions.get(session_id)
-        return session.nesting_depth if session else 0
+    session.coordinator.register_capability("session.spawn", spawn_capability)
+    logger.info("Registered session spawn capability (session.spawn)")
 
-    def set_send_function(
-        self,
-        send_fn: Callable[[Event], Coroutine[Any, Any, None]],
-    ) -> None:
-        """Set or update the send function."""
-        self._send = send_fn
-
-    def cleanup_completed(self) -> int:
-        """Remove completed/cancelled sessions from tracking.
-
-        Returns:
-            Number of sessions cleaned up
-        """
-        completed = [
-            sid
-            for sid, s in self._sessions.items()
-            if s.status in ("completed", "error", "cancelled")
-        ]
-
-        for sid in completed:
-            session = self._sessions.pop(sid, None)
-            if session:
-                # Remove from parent's children list
-                parent_children = self._children.get(session.parent_session_id, [])
-                if sid in parent_children:
-                    parent_children.remove(sid)
-
-        return len(completed)
-
-    @property
-    def active_count(self) -> int:
-        """Number of active (running) spawned sessions."""
-        return sum(1 for s in self._sessions.values() if s.status == "running")
+    return spawn_manager
