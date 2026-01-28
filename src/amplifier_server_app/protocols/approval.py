@@ -2,6 +2,9 @@
 
 Provides the approval interface required by amplifier-core for tool
 execution approvals and other user confirmation requests.
+
+Implements the ApprovalSystem protocol with the same signature as
+CLIApprovalSystem and WebApprovalSystem.
 """
 
 from __future__ import annotations
@@ -9,13 +12,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from ..transport.base import Event
 
 logger = logging.getLogger(__name__)
+
+
+class ApprovalTimeoutError(Exception):
+    """Raised when user approval times out."""
+
+    pass
 
 
 @dataclass
@@ -23,8 +32,7 @@ class PendingApproval:
     """A pending approval request waiting for user response."""
 
     request_id: str
-    tool_name: str
-    tool_args: dict[str, Any]
+    prompt: str
     options: list[str]
     future: asyncio.Future[str]
     created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
@@ -33,25 +41,26 @@ class PendingApproval:
 class ServerApprovalSystem:
     """Approval system that sends approval requests to connected clients.
 
-    Implements the approval system interface expected by amplifier-core.
+    Implements the ApprovalSystem protocol expected by amplifier-core.
     Approval requests are sent as events to clients, and responses are
     collected via the handle_response method.
+
+    Interface matches CLIApprovalSystem and WebApprovalSystem:
+        request_approval(prompt, options, timeout, default) -> str
     """
 
     def __init__(
         self,
         send_fn: Callable[[Event], Awaitable[None]] | None = None,
-        timeout: float = 300.0,
     ) -> None:
         """Initialize the approval system.
 
         Args:
             send_fn: Async function to send events to the client
-            timeout: Default timeout for approval requests (seconds)
         """
         self._send_fn = send_fn
-        self._timeout = timeout
         self._pending: dict[str, PendingApproval] = {}
+        self._cache: dict[int, str] = {}  # Session-scoped approval cache
 
     def set_send_fn(self, send_fn: Callable[[Event], Awaitable[None]]) -> None:
         """Set the send function after initialization."""
@@ -59,34 +68,38 @@ class ServerApprovalSystem:
 
     async def request_approval(
         self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        options: list[str] | None = None,
-        message: str | None = None,
-        timeout: float | None = None,
+        prompt: str,
+        options: list[str],
+        timeout: float,
+        default: Literal["allow", "deny"],
     ) -> str:
         """Request approval from the user.
 
+        This is the interface expected by amplifier-core's approval system.
+
         Args:
-            tool_name: Name of the tool requesting approval
-            tool_args: Arguments to the tool
-            options: Available choices (default: ["approve", "deny"])
-            message: Optional message to display
-            timeout: Timeout for this request (uses default if not specified)
+            prompt: Question to ask user (e.g., "Allow tool X to run?")
+            options: Available choices (e.g., ["Allow once", "Allow always", "Deny"])
+            timeout: Seconds to wait for response
+            default: Action to take on timeout ("allow" or "deny")
 
         Returns:
-            The user's chosen option
+            The user's chosen option string
 
         Raises:
-            asyncio.TimeoutError: If approval times out
-            RuntimeError: If no send function is configured
+            ApprovalTimeoutError: If approval times out and we want to raise
         """
-        if not self._send_fn:
-            logger.warning("No send function configured, auto-denying approval")
-            return "deny"
+        # Check cache for "Allow always" decisions
+        cache_key = hash((prompt, tuple(options)))
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            logger.debug(f"Using cached approval: {cached}")
+            return cached
 
-        options = options or ["approve", "deny"]
-        timeout = timeout or self._timeout
+        if not self._send_fn:
+            logger.warning("No send function configured, using default")
+            return self._resolve_default(default, options)
+
         request_id = f"approval_{uuid.uuid4().hex[:12]}"
 
         # Create future for response
@@ -96,8 +109,7 @@ class ServerApprovalSystem:
         # Store pending request
         pending = PendingApproval(
             request_id=request_id,
-            tool_name=tool_name,
-            tool_args=tool_args,
+            prompt=prompt,
             options=options,
             future=future,
         )
@@ -109,23 +121,27 @@ class ServerApprovalSystem:
                 type="approval:required",
                 properties={
                     "request_id": request_id,
-                    "tool_name": tool_name,
-                    "tool_args": tool_args,
+                    "prompt": prompt,
                     "options": options,
-                    "message": message or f"Approve execution of {tool_name}?",
                     "timeout": timeout,
+                    "default": default,
                 },
             )
             await self._send_fn(event)
-            logger.debug(f"Sent approval request {request_id} for {tool_name}")
+            logger.debug(f"Sent approval request {request_id}")
 
             # Wait for response with timeout
             result = await asyncio.wait_for(future, timeout=timeout)
             logger.debug(f"Received approval response for {request_id}: {result}")
 
+            # Cache "always" decisions
+            if "always" in result.lower():
+                self._cache[cache_key] = result
+                logger.debug(f"Cached 'always' approval: {result}")
+
             # Send confirmation event
             confirmation_event = Event(
-                type="approval:granted" if result == "approve" else "approval:denied",
+                type="approval:resolved",
                 properties={
                     "request_id": request_id,
                     "choice": result,
@@ -135,25 +151,49 @@ class ServerApprovalSystem:
 
             return result
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"Approval request {request_id} timed out")
             # Send timeout event
             if self._send_fn:
                 await self._send_fn(
                     Event(
-                        type="approval:denied",
+                        type="approval:timeout",
                         properties={
                             "request_id": request_id,
-                            "choice": "deny",
-                            "reason": "timeout",
+                            "applied_default": default,
                         },
                     )
                 )
-            raise
+            return self._resolve_default(default, options)
 
         finally:
             # Clean up pending request
             self._pending.pop(request_id, None)
+
+    def _resolve_default(
+        self,
+        default: Literal["allow", "deny"],
+        options: list[str],
+    ) -> str:
+        """Find the best matching option for the default action.
+
+        Args:
+            default: The default action ("allow" or "deny")
+            options: Available options
+
+        Returns:
+            The option string that best matches the default
+        """
+        # Try to find option matching default
+        for option in options:
+            option_lower = option.lower()
+            if default == "allow" and ("allow" in option_lower or "yes" in option_lower):
+                return option
+            if default == "deny" and ("deny" in option_lower or "no" in option_lower):
+                return option
+
+        # Fall back to last option (typically "deny") or first
+        return options[-1] if default == "deny" else options[0]
 
     def handle_response(self, request_id: str, choice: str) -> bool:
         """Handle an approval response from the client.
@@ -181,7 +221,6 @@ class ServerApprovalSystem:
                 f"expected one of {pending.options}"
             )
             # Still accept it but log the warning
-            pass
 
         pending.future.set_result(choice)
         logger.debug(f"Handled approval response for {request_id}: {choice}")
@@ -200,7 +239,7 @@ class ServerApprovalSystem:
         return [
             {
                 "request_id": p.request_id,
-                "tool_name": p.tool_name,
+                "prompt": p.prompt,
                 "options": p.options,
             }
             for p in self._pending.values()

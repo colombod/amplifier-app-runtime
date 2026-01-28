@@ -230,8 +230,18 @@ class ManagedSession:
             initial_transcript: Optional transcript to restore
         """
         from .protocols import register_spawn_capability, register_streaming_hook
+        from .resolvers import AppModuleResolver, FallbackResolver
 
         try:
+            # Wrap bundle resolver with app-layer fallback (like CLI does)
+            # This allows modules not in the bundle to be resolved from
+            # environment variables or installed packages
+            fallback_resolver = FallbackResolver()
+            prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
+                bundle_resolver=prepared_bundle.resolver,
+                fallback_resolver=fallback_resolver,
+            )
+
             # Create session via foundation's factory method
             session = await prepared_bundle.create_session(
                 session_id=self.session_id,
