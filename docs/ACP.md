@@ -2,6 +2,13 @@
 
 Amplifier Server implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) for standardized communication with code editors and AI coding tools.
 
+## Official Documentation
+
+- **Website:** [agentclientprotocol.com](https://agentclientprotocol.com)
+- **Introduction:** [Get Started](https://agentclientprotocol.com/get-started/introduction)
+- **Protocol Specification:** [Specification](https://agentclientprotocol.com/specification)
+- **GitHub:** [anthropics/acp](https://github.com/anthropics/acp)
+
 ## Overview
 
 ACP enables integration with:
