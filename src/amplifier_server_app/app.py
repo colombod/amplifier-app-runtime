@@ -14,6 +14,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount, Route
 
+from .acp import acp_routes
 from .routes import (
     event_routes,
     health_routes,
@@ -38,6 +39,7 @@ def create_app(*, use_protocol_routes: bool = True) -> Starlette:
     routes.extend(health_routes)
     routes.extend(event_routes)
     routes.extend(websocket_routes)  # WebSocket full-duplex transport
+    routes.extend(acp_routes)  # Agent Client Protocol (ACP) routes
 
     if use_protocol_routes:
         # Mount protocol routes at /v1/ prefix
