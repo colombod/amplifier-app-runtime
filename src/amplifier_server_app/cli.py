@@ -614,8 +614,7 @@ def bundle_info(bundle_name: str, output_format: str) -> None:
             # Extract available tools
             if hasattr(prepared, "bundle") and hasattr(prepared.bundle, "tools"):
                 info["tools"] = [
-                    t.get("name", t.get("module", "unknown"))
-                    for t in (prepared.bundle.tools or [])
+                    t.get("name", t.get("module", "unknown")) for t in (prepared.bundle.tools or [])
                 ]
 
             # Extract available agents
@@ -670,39 +669,33 @@ def provider_list(output_format: str) -> None:
     providers = []
 
     # Check for common provider API keys
+    # Note: Default models are handled by the provider modules themselves
     provider_checks = [
-        ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-5-20250514"),
-        ("openai", "OPENAI_API_KEY", "gpt-4o"),
-        ("azure-openai", "AZURE_OPENAI_API_KEY", "gpt-4o"),
-        ("google", "GOOGLE_API_KEY", "gemini-pro"),
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("azure-openai", "AZURE_OPENAI_API_KEY"),
+        ("google", "GOOGLE_API_KEY"),
     ]
 
-    for name, env_var, default_model in provider_checks:
-        if os.getenv(env_var):
-            providers.append({
+    for name, env_var in provider_checks:
+        providers.append(
+            {
                 "name": name,
                 "env_var": env_var,
-                "status": "configured",
-                "default_model": default_model,
-            })
-        else:
-            providers.append({
-                "name": name,
-                "env_var": env_var,
-                "status": "not configured",
-                "default_model": default_model,
-            })
+                "status": "configured" if os.getenv(env_var) else "not configured",
+            }
+        )
 
     if output_format == FORMAT_JSON:
         click.echo(json.dumps(providers, indent=2))
         return
 
-    click.echo(f"{'Provider':<15} {'Status':<15} {'Env Var':<25} {'Default Model':<25}")
-    click.echo("-" * 82)
+    click.echo(f"{'Provider':<15} {'Status':<15} {'Env Var':<25}")
+    click.echo("-" * 55)
     for p in providers:
         status_color = "green" if p["status"] == "configured" else "red"
         status_display = click.style(p["status"], fg=status_color)
-        click.echo(f"{p['name']:<15} {status_display:<24} {p['env_var']:<25} {p['default_model']:<25}")
+        click.echo(f"{p['name']:<15} {status_display:<24} {p['env_var']:<25}")
 
 
 @provider.command("check")
