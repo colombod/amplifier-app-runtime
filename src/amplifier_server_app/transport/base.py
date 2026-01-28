@@ -18,7 +18,8 @@ from pydantic import BaseModel
 class TransportMode(str, Enum):
     """Available transport modes."""
 
-    SSE = "sse"  # Server-Sent Events (HTTP/1.1, HTTP/2)
+    SSE = "sse"  # Server-Sent Events (HTTP/1.1, HTTP/2) - unidirectional
+    WEBSOCKET = "websocket"  # WebSocket - full duplex
     STDIO = "stdio"  # stdin/stdout (for subprocess/IPC)
 
 

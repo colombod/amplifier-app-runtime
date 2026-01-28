@@ -14,7 +14,13 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount, Route
 
-from .routes import event_routes, health_routes, protocol_routes, session_routes
+from .routes import (
+    event_routes,
+    health_routes,
+    protocol_routes,
+    session_routes,
+    websocket_routes,
+)
 
 
 def create_app(*, use_protocol_routes: bool = True) -> Starlette:
@@ -31,6 +37,7 @@ def create_app(*, use_protocol_routes: bool = True) -> Starlette:
     routes: list[Route | Mount] = []
     routes.extend(health_routes)
     routes.extend(event_routes)
+    routes.extend(websocket_routes)  # WebSocket full-duplex transport
 
     if use_protocol_routes:
         # Mount protocol routes at /v1/ prefix

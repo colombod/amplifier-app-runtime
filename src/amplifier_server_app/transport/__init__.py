@@ -21,6 +21,12 @@ from .base import (
 )
 from .sse import SSEEventStream
 from .stdio import StdioConfig, StdioTransport, run_stdio_server
+from .websocket import (
+    WebSocketClientTransport,
+    WebSocketMessage,
+    WebSocketMessageType,
+    WebSocketServerTransport,
+)
 
 # Note: stdio_adapter is imported separately to avoid circular imports
 # Use: from amplifier_server_app.transport.stdio_adapter import StdioProtocolAdapter
@@ -36,6 +42,11 @@ __all__ = [
     "TransportMode",
     # SSE implementation
     "SSEEventStream",
+    # WebSocket implementation
+    "WebSocketClientTransport",
+    "WebSocketServerTransport",
+    "WebSocketMessage",
+    "WebSocketMessageType",
     # stdio implementation
     "StdioConfig",
     "StdioTransport",
