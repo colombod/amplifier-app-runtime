@@ -16,26 +16,26 @@ Amplifier Server provides the backend infrastructure for AI agent interactions:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Client Applications                           │
+│                    Client Applications                          │
 │  (amplifier-tui, web apps, IDE extensions, etc.)                │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
                     SDK (HTTP or Embedded)
                                   │
 ┌─────────────────────────────────┴───────────────────────────────┐
-│                    Amplifier Server                              │
-├──────────────────────────────────────────────────────────────────┤
-│  Protocol Layer                                                  │
+│                    Amplifier Server                             │
+├─────────────────────────────────────────────────────────────────┤
+│  Protocol Layer                                                 │
 │  ├── Commands (session.create, prompt.send, etc.)               │
 │  └── Events (result, error, content.delta, etc.)                │
-├──────────────────────────────────────────────────────────────────┤
-│  Transport Layer                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  Transport Layer                                                │
 │  ├── HTTP + SSE (primary)                                       │
 │  └── stdio (for embedded/subprocess use)                        │
-├──────────────────────────────────────────────────────────────────┤
-│  Session Manager                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  Session Manager                                                │
 │  └── Manages Amplifier sessions (or mock mode without core)     │
-└──────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Installation
