@@ -27,6 +27,7 @@ class Event(BaseModel):
 
     type: str
     properties: dict[str, Any] = {}
+    sequence: int | None = None
 
 
 class EventStream(ABC):
