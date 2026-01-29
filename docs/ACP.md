@@ -50,21 +50,23 @@ pip install -e .
 
 ### HTTP Mode (Remote Agents)
 
-Start the server to expose ACP endpoints over HTTP:
+Start the server with ACP endpoints enabled using `--acp-enabled`:
 
 ```bash
-# Default port (4096)
-amplifier-server serve
+# Default port (4096) with ACP enabled
+amplifier-server serve --acp-enabled
 
 # Custom port
-amplifier-server serve --port 8080
+amplifier-server serve --acp-enabled --port 8080
 
-# Custom host and port
-amplifier-server serve --host 0.0.0.0 --port 8080
+# Custom host and port (e.g., for external access)
+amplifier-server serve --acp-enabled --host 0.0.0.0 --port 8080
 
 # Development mode with auto-reload
-amplifier-server serve --reload
+amplifier-server serve --acp-enabled --reload
 ```
+
+> **Note:** The `--acp-enabled` flag is required to expose ACP endpoints. Without it, only the core HTTP API is available.
 
 The server exposes these ACP endpoints:
 
