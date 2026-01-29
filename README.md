@@ -14,10 +14,10 @@ A runtime server that exposes [Amplifier](https://github.com/microsoft/amplifier
 
 ```bash
 # Install with uv (recommended)
-uv tool install git+https://github.com/microsoft/amplifier-app-runtime.git
+uv tool install git+https://github.com/colombod/amplifier-app-runtime.git
 
 # Or clone and install locally
-git clone https://github.com/microsoft/amplifier-app-runtime.git
+git clone https://github.com/colombod/amplifier-app-runtime.git
 cd amplifier-app-runtime
 uv pip install -e .
 ```

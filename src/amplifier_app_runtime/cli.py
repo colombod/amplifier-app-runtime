@@ -93,6 +93,28 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
+    # Validate flag combinations
+    if acp_enabled and not http_mode:
+        raise click.UsageError(
+            "--acp requires --http mode. "
+            "ACP endpoints are only available when running as an HTTP server.\n\n"
+            "Usage:\n"
+            "  amplifier-runtime --http --acp     # HTTP server with ACP endpoints\n"
+            "  amplifier-runtime                  # Stdio mode (no ACP endpoints)"
+        )
+
+    if reload and not http_mode:
+        raise click.UsageError(
+            "--reload requires --http mode. "
+            "Auto-reload is only available when running as an HTTP server."
+        )
+
+    if (host != "127.0.0.1" or port != 4096) and not http_mode and not health_check:
+        raise click.UsageError(
+            "--host and --port require --http mode. "
+            "These options are only available when running as an HTTP server."
+        )
+
     # Handle --health flag
     if health_check:
         _do_health_check(health_url)

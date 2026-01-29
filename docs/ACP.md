@@ -1,6 +1,6 @@
 # Agent Client Protocol (ACP) Support
 
-Amplifier Server implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) for standardized communication with code editors and AI coding tools.
+Amplifier Runtime implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) for standardized communication with code editors and AI coding tools.
 
 ## Table of Contents
 
@@ -35,16 +35,92 @@ ACP is a standardized protocol for communication between code editors and AI cod
 
 ```bash
 # Install
-git clone https://github.com/microsoft/amplifier-app-runtime.git
+uv tool install git+https://github.com/colombod/amplifier-app-runtime.git
+
+# Or clone and install locally
+git clone https://github.com/colombod/amplifier-app-runtime.git
 cd amplifier-app-runtime
 uv pip install -e .
+```
 
-# Run with ACP enabled
+### For IDE Subprocess Integration (Recommended)
+
+Most IDEs spawn agents as local subprocesses using stdio. This is the **default mode**:
+
+```bash
+# Run in stdio mode (default) - IDEs spawn this as a subprocess
+amplifier-runtime
+```
+
+The agent communicates via JSON-RPC over stdin/stdout. All logs go to stderr.
+
+### For HTTP Server Mode
+
+If you need HTTP/WebSocket access (e.g., for web apps or remote clients):
+
+```bash
+# Run HTTP server with ACP endpoints
 amplifier-runtime --http --acp
 
 # Test it works
 curl http://localhost:4096/health
 # {"status":"ok"}
+```
+
+## Running Modes
+
+Amplifier Runtime supports two modes of operation:
+
+### Stdio Mode (Default)
+
+**Best for:** IDE integrations that spawn the agent as a local subprocess (Zed, VS Code, JetBrains, Neovim).
+
+```bash
+# Just run the command - stdio is the default
+amplifier-runtime
+```
+
+- Communicates via JSON-RPC 2.0 over stdin/stdout
+- All logs and diagnostics go to stderr
+- Used when IDEs spawn the agent as a subprocess
+
+### HTTP Mode
+
+**Best for:** Web applications, remote IDE connections, multi-client scenarios.
+
+```bash
+# Start HTTP server (without ACP endpoints)
+amplifier-runtime --http
+
+# Start HTTP server WITH ACP endpoints
+amplifier-runtime --http --acp
+
+# Custom host and port
+amplifier-runtime --http --acp --host 0.0.0.0 --port 8080
+
+# Development mode with auto-reload
+amplifier-runtime --http --acp --reload
+```
+
+> **Important:** The `--acp` flag requires `--http`. You cannot use `--acp` with stdio mode - they are incompatible. Attempting to use `--acp` without `--http` will result in an error.
+
+**HTTP Mode Endpoints:**
+
+| Endpoint | Method | Description | Requires |
+|----------|--------|-------------|----------|
+| `/health` | GET | Health check | `--http` |
+| `/acp/rpc` | POST | ACP JSON-RPC requests | `--http --acp` |
+| `/acp/events` | GET | ACP SSE notifications | `--http --acp` |
+| `/acp/ws` | WebSocket | ACP full-duplex communication | `--http --acp` |
+
+### Health Check
+
+```bash
+# Check if an HTTP server is running
+amplifier-runtime --health
+
+# Check specific URL
+amplifier-runtime --health --health-url http://localhost:8080
 ```
 
 ## Implementation
@@ -63,58 +139,6 @@ This implementation uses the [official ACP Python SDK](https://github.com/agentc
 | `amplifier_app_runtime.acp.routes` | HTTP/SSE/WebSocket endpoints |
 | `amplifier_app_runtime.acp.tools` | Client-side tools (terminal, filesystem) |
 | `amplifier_app_runtime.acp.__main__` | Stdio entry point with protocol isolation |
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/microsoft/amplifier-app-runtime.git
-cd amplifier-app-runtime
-
-# Install with uv (recommended)
-uv pip install -e .
-
-# Or with pip
-pip install -e .
-```
-
-## Running the Server
-
-### HTTP Mode (Remote Agents)
-
-Start the server with ACP endpoints enabled using `--acp-enabled`:
-
-```bash
-# Default port (4096) with ACP enabled
-amplifier-runtime --http --acp
-
-# Custom port
-amplifier-runtime --http --acp --port 8080
-
-# Custom host and port (e.g., for external access)
-amplifier-runtime --http --acp --host 0.0.0.0 --port 8080
-
-# Development mode with auto-reload
-amplifier-runtime --http --acp --reload
-```
-
-> **Note:** The `--acp-enabled` flag is required to expose ACP endpoints. Without it, only the core HTTP API is available.
-
-The server exposes these ACP endpoints:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/acp/rpc` | POST | JSON-RPC 2.0 requests |
-| `/acp/events` | GET | Server-Sent Events for notifications |
-| `/acp/ws` | WebSocket | Full-duplex communication |
-
-### Verify Server is Running
-
-```bash
-# Health check
-curl http://localhost:4096/health
-# Returns: {"status":"ok"}
-```
 
 ## ACP Protocol Usage
 
@@ -374,9 +398,30 @@ The `session/update` notification includes a `type` field:
 
 ## Editor Configuration
 
-### Zed
+### Zed (Stdio Mode - Recommended)
 
-Add to your Zed settings (`~/.config/zed/settings.json`):
+Zed spawns the agent as a subprocess. Add to your Zed settings (`~/.config/zed/settings.json`):
+
+```json
+{
+  "assistant": {
+    "provider": "acp",
+    "acp": {
+      "command": ["amplifier-runtime"]
+    }
+  }
+}
+```
+
+### Zed (HTTP Mode)
+
+If you need to connect to a remote server, first start the server:
+
+```bash
+amplifier-runtime --http --acp
+```
+
+Then configure Zed:
 
 ```json
 {
@@ -394,6 +439,12 @@ Add to your Zed settings (`~/.config/zed/settings.json`):
 
 Any ACP-compliant client can connect using:
 
+**Stdio mode (spawn as subprocess):**
+```bash
+amplifier-runtime
+```
+
+**HTTP mode endpoints:**
 - **JSON-RPC endpoint:** `http://localhost:4096/acp/rpc`
 - **SSE endpoint:** `http://localhost:4096/acp/events`
 - **WebSocket endpoint:** `ws://localhost:4096/acp/ws`
@@ -444,17 +495,20 @@ Example error response:
 lsof -i :4096
 
 # Try a different port
-amplifier-runtime --http --port 8080
+amplifier-runtime --http --acp --port 8080
 ```
 
 ### Connection refused
 
 ```bash
 # Verify server is running
+amplifier-runtime --health
+
+# Or check directly
 curl http://localhost:4096/health
 
 # Check server logs
-amplifier-runtime --http 2>&1 | tee server.log
+amplifier-runtime --http --acp 2>&1 | tee server.log
 ```
 
 ### WebSocket connection fails
@@ -463,60 +517,62 @@ Ensure you're using the correct URL scheme:
 - HTTP server: `ws://localhost:4096/acp/ws`
 - HTTPS server: `wss://localhost:4096/acp/ws`
 
-## Stdio Mode (Local Agents)
+### Error: "--acp requires --http mode"
 
-For editors that spawn agents as local subprocesses, use stdio mode:
+The `--acp` flag only works with HTTP mode. ACP HTTP endpoints are not available in stdio mode.
 
 ```bash
-# Run agent over stdio (for editor subprocess integration)
-python -m amplifier_app_runtime.acp
+# WRONG - will error
+amplifier-runtime --acp
+
+# CORRECT - stdio mode (default, no --acp flag needed)
+amplifier-runtime
+
+# CORRECT - HTTP mode with ACP endpoints
+amplifier-runtime --http --acp
 ```
 
-The agent communicates via JSON-RPC over stdin/stdout, with logs to stderr.
+## Stdio Protocol Details
 
 ### CRITICAL: Stdio Protocol Isolation
 
-When using stdio transport, **stdout is exclusively reserved for JSON-RPC messages**. The entry point (`python -m amplifier_app_runtime.acp`) implements several layers of protection:
+When using stdio mode (the default), **stdout is exclusively reserved for JSON-RPC messages**. The entry point implements several layers of protection:
 
 1. **JSON-RPC Stdout Filter**: Only valid JSON objects starting with `{` are allowed through to stdout. Any non-JSON content (log messages, print statements, etc.) is automatically redirected to stderr with a `[stdout-filtered]` prefix.
 
 2. **Logging Configuration**: All Python logging is configured to use stderr before any other modules are imported.
 
-3. **Route Namespacing**: When ACP is enabled via `--acp-enabled`, Amplifier's internal HTTP/WS/SSE routes are namespaced under `/amplifier/` to prevent conflicts with ACP routes.
-
 This ensures the ACP protocol is never corrupted by stray output.
 
-### Architecture: ACP vs Amplifier Transports
+### Architecture: Stdio vs HTTP Mode
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     ACP ENABLED MODE                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  STDIO (stdin/stdout)                                          │
-│  └── Exclusively owned by ACP JSON-RPC protocol                │
-│      └── JsonRpcStdoutFilter ensures only valid JSON passes    │
-│                                                                 │
-│  STDERR                                                        │
-│  └── All logging, diagnostics, filtered content                │
-│                                                                 │
-│  HTTP Routes:                                                   │
-│  ├── /health              - Health check (shared)              │
-│  ├── /acp/rpc             - ACP JSON-RPC endpoint              │
-│  ├── /acp/events          - ACP SSE notifications              │
-│  ├── /acp/ws              - ACP WebSocket                      │
-│  └── /amplifier/*         - Amplifier routes (namespaced)      │
-│      ├── /amplifier/event - Amplifier SSE                      │
-│      ├── /amplifier/ws    - Amplifier WebSocket                │
-│      └── /amplifier/v1/*  - Amplifier protocol routes          │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        STDIO MODE (default)                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  STDIN   ───► JSON-RPC requests from IDE                           │
+│  STDOUT  ◄─── JSON-RPC responses to IDE (exclusively)              │
+│  STDERR  ◄─── All logging, diagnostics, filtered content           │
+│                                                                     │
+│  Usage: amplifier-runtime                                           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 
-This separation ensures that:
-- ACP protocol messages never mix with Amplifier's internal transport
-- Amplifier sessions forward events through ACP's `session/update` notifications
-- HTTP routes don't conflict between the two systems
+┌─────────────────────────────────────────────────────────────────────┐
+│                     HTTP MODE (--http --acp)                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  HTTP Routes:                                                       │
+│  ├── /health              - Health check                            │
+│  ├── /acp/rpc             - ACP JSON-RPC endpoint                   │
+│  ├── /acp/events          - ACP SSE notifications                   │
+│  └── /acp/ws              - ACP WebSocket                           │
+│                                                                     │
+│  Usage: amplifier-runtime --http --acp                              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## Client-Side Tools
 
@@ -645,3 +701,40 @@ These tests:
 2. Use the official ACP SDK client
 3. Run full protocol flow: initialize → session/new → prompt → response
 4. Verify streaming updates and tool callbacks work correctly
+
+## CLI Reference
+
+```bash
+# Stdio mode (default) - for IDE subprocess integration
+amplifier-runtime
+
+# HTTP mode - for remote/web access
+amplifier-runtime --http
+
+# HTTP mode with ACP endpoints
+amplifier-runtime --http --acp
+
+# HTTP mode with custom settings
+amplifier-runtime --http --acp --host 0.0.0.0 --port 8080 --reload
+
+# Health check
+amplifier-runtime --health
+amplifier-runtime --health --health-url http://localhost:8080
+
+# Session management
+amplifier-runtime session list
+amplifier-runtime session info <session_id>
+amplifier-runtime session resume <session_id>
+amplifier-runtime session delete <session_id>
+
+# Bundle management
+amplifier-runtime bundle list
+amplifier-runtime bundle info <bundle_name>
+
+# Provider management
+amplifier-runtime provider list
+amplifier-runtime provider check <provider_name>
+
+# Configuration
+amplifier-runtime config
+```
