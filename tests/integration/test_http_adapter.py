@@ -17,7 +17,7 @@ import json
 import pytest
 from starlette.testclient import TestClient
 
-from amplifier_server_app.app import create_app
+from amplifier_app_runtime.app import create_app
 
 
 @pytest.fixture

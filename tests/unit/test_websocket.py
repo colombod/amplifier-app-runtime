@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from amplifier_server_app.transport.websocket import (
+from amplifier_app_runtime.transport.websocket import (
     WebSocketMessage,
     WebSocketMessageType,
     WebSocketServerTransport,
@@ -131,7 +131,7 @@ class TestWebSocketServerTransport:
         mock_ws.client_state.name = "CONNECTED"
 
         # Mock WebSocketState.CONNECTED
-        with patch("amplifier_server_app.transport.websocket.WebSocketState") as mock_state:
+        with patch("amplifier_app_runtime.transport.websocket.WebSocketState") as mock_state:
             mock_state.CONNECTED = mock_ws.client_state
 
             transport = WebSocketServerTransport(mock_ws)
@@ -148,7 +148,7 @@ class TestWebSocketServerTransport:
         mock_ws.send_text = AsyncMock()
         mock_ws.client_state = MagicMock()
 
-        with patch("amplifier_server_app.transport.websocket.WebSocketState") as mock_state:
+        with patch("amplifier_app_runtime.transport.websocket.WebSocketState") as mock_state:
             mock_state.CONNECTED = mock_ws.client_state
 
             transport = WebSocketServerTransport(mock_ws)
@@ -167,7 +167,7 @@ class TestWebSocketServerTransport:
         mock_ws.send_text = AsyncMock()
         mock_ws.client_state = MagicMock()
 
-        with patch("amplifier_server_app.transport.websocket.WebSocketState") as mock_state:
+        with patch("amplifier_app_runtime.transport.websocket.WebSocketState") as mock_state:
             mock_state.CONNECTED = mock_ws.client_state
 
             transport = WebSocketServerTransport(mock_ws)
@@ -191,7 +191,7 @@ class TestWebSocketServerTransport:
         mock_ws.send_text = AsyncMock()
         mock_ws.client_state = MagicMock()
 
-        with patch("amplifier_server_app.transport.websocket.WebSocketState") as mock_state:
+        with patch("amplifier_app_runtime.transport.websocket.WebSocketState") as mock_state:
             mock_state.CONNECTED = mock_ws.client_state
 
             transport = WebSocketServerTransport(mock_ws)
@@ -212,7 +212,7 @@ class TestWebSocketServerTransport:
         mock_ws.close = AsyncMock()
         mock_ws.client_state = MagicMock()
 
-        with patch("amplifier_server_app.transport.websocket.WebSocketState") as mock_state:
+        with patch("amplifier_app_runtime.transport.websocket.WebSocketState") as mock_state:
             mock_state.CONNECTED = mock_ws.client_state
 
             transport = WebSocketServerTransport(mock_ws)
@@ -235,14 +235,14 @@ class TestWebSocketSessionHandler:
     @pytest.mark.asyncio
     async def test_handler_closes_on_missing_session(self) -> None:
         """Handler closes connection if session not found."""
-        from amplifier_server_app.routes.websocket import WebSocketSessionHandler
+        from amplifier_app_runtime.routes.websocket import WebSocketSessionHandler
 
         mock_ws = MagicMock()
         mock_ws.close = AsyncMock()
 
         handler = WebSocketSessionHandler(mock_ws, "nonexistent_session")
 
-        with patch("amplifier_server_app.routes.websocket.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.websocket.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=None)
 
             await handler.handle()
@@ -259,7 +259,7 @@ class TestWebSocketEndpoints:
     @pytest.mark.asyncio
     async def test_session_endpoint_missing_session_id(self) -> None:
         """Session endpoint closes on missing session_id."""
-        from amplifier_server_app.routes.websocket import websocket_session_endpoint
+        from amplifier_app_runtime.routes.websocket import websocket_session_endpoint
 
         mock_ws = MagicMock()
         mock_ws.path_params = {}
@@ -274,14 +274,14 @@ class TestWebSocketEndpoints:
     @pytest.mark.asyncio
     async def test_session_endpoint_creates_handler(self) -> None:
         """Session endpoint creates handler for valid session_id."""
-        from amplifier_server_app.routes.websocket import websocket_session_endpoint
+        from amplifier_app_runtime.routes.websocket import websocket_session_endpoint
 
         mock_ws = MagicMock()
         mock_ws.path_params = {"session_id": "sess_123"}
         mock_ws.close = AsyncMock()
 
         with patch(
-            "amplifier_server_app.routes.websocket.WebSocketSessionHandler"
+            "amplifier_app_runtime.routes.websocket.WebSocketSessionHandler"
         ) as mock_handler_cls:
             mock_handler = MagicMock()
             mock_handler.handle = AsyncMock()
@@ -303,7 +303,7 @@ class TestWebSocketRoutes:
 
     def test_websocket_routes_defined(self) -> None:
         """WebSocket routes are properly defined."""
-        from amplifier_server_app.routes.websocket import websocket_routes
+        from amplifier_app_runtime.routes.websocket import websocket_routes
 
         assert len(websocket_routes) == 2
 
@@ -314,7 +314,7 @@ class TestWebSocketRoutes:
 
     def test_websocket_routes_exported(self) -> None:
         """WebSocket routes are exported from routes package."""
-        from amplifier_server_app.routes import websocket_routes
+        from amplifier_app_runtime.routes import websocket_routes
 
         assert websocket_routes is not None
         assert len(websocket_routes) >= 2

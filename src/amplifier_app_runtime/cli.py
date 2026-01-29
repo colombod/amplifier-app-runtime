@@ -1,14 +1,14 @@
 """Amplifier Server CLI.
 
 Commands:
-    amplifier-server serve              - Run headless HTTP server
-    amplifier-server stdio              - Run in stdio mode (for subprocess/IPC)
-    amplifier-server health             - Check server health
-    amplifier-server run "prompt"       - One-shot execution
-    amplifier-server session list       - List saved sessions
-    amplifier-server session info <id>  - Show session details
-    amplifier-server session resume <id> - Resume and continue a session
-    amplifier-server session delete <id> - Delete a session
+    amplifier-runtime serve              - Run headless HTTP server
+    amplifier-runtime stdio              - Run in stdio mode (for subprocess/IPC)
+    amplifier-runtime health             - Check server health
+    amplifier-runtime run "prompt"       - One-shot execution
+    amplifier-runtime session list       - List saved sessions
+    amplifier-runtime session info <id>  - Show session details
+    amplifier-runtime session resume <id> - Resume and continue a session
+    amplifier-runtime session delete <id> - Delete a session
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def serve(host: str, port: int, reload: bool, acp_enabled: bool) -> None:
     click.echo("Press Ctrl+C to stop", err=True)
 
     uvicorn.run(
-        "amplifier_server_app.app:create_app",
+        "amplifier_app_runtime.app:create_app",
         factory=True,
         host=host,
         port=port,
@@ -199,16 +199,16 @@ def run_prompt(
     Examples:
 
         # Simple one-shot
-        amplifier-server run "What is 2+2?"
+        amplifier-runtime run "What is 2+2?"
 
         # With specific bundle
-        amplifier-server run "Analyze this code" --bundle foundation
+        amplifier-runtime run "Analyze this code" --bundle foundation
 
         # Continue existing session
-        amplifier-server run "And what about 3+3?" --session sess_abc123
+        amplifier-runtime run "And what about 3+3?" --session sess_abc123
 
         # JSON output for scripting
-        amplifier-server run "List files" --json
+        amplifier-runtime run "List files" --json
     """
     from .session import SessionConfig, SessionManager
 
@@ -301,13 +301,13 @@ def session_list(show_all: bool, limit: int, output_format: str) -> None:
     Examples:
 
         # List recent sessions
-        amplifier-server session list
+        amplifier-runtime session list
 
         # Include agent sub-sessions
-        amplifier-server session list --all
+        amplifier-runtime session list --all
 
         # JSON output for scripting
-        amplifier-server session list --format json
+        amplifier-runtime session list --format json
     """
     from .session_store import SessionStore
 
@@ -359,13 +359,13 @@ def session_info(session_id: str, output_format: str, transcript: bool) -> None:
     Examples:
 
         # Show session info
-        amplifier-server session info sess_abc123
+        amplifier-runtime session info sess_abc123
 
         # Include transcript
-        amplifier-server session info sess_abc123 --transcript
+        amplifier-runtime session info sess_abc123 --transcript
 
         # JSON output
-        amplifier-server session info sess_abc123 --format json --transcript
+        amplifier-runtime session info sess_abc123 --format json --transcript
     """
     from .session_store import SessionStore
 
@@ -429,10 +429,10 @@ def session_resume(session_id: str, prompt: str | None, output_json: bool) -> No
     Examples:
 
         # Show session state (no prompt)
-        amplifier-server session resume sess_abc123
+        amplifier-runtime session resume sess_abc123
 
         # Continue conversation
-        amplifier-server session resume sess_abc123 "What else can you tell me?"
+        amplifier-runtime session resume sess_abc123 "What else can you tell me?"
     """
     from .session import SessionManager
 
@@ -497,10 +497,10 @@ def session_delete(session_id: str, yes: bool) -> None:
     Examples:
 
         # Delete with confirmation
-        amplifier-server session delete sess_abc123
+        amplifier-runtime session delete sess_abc123
 
         # Skip confirmation
-        amplifier-server session delete sess_abc123 --yes
+        amplifier-runtime session delete sess_abc123 --yes
     """
     from .session_store import SessionStore
 
@@ -528,7 +528,7 @@ def session_clear(yes: bool) -> None:
 
     Examples:
 
-        amplifier-server session clear --yes
+        amplifier-runtime session clear --yes
     """
     from .session_store import SessionStore
 
@@ -566,8 +566,8 @@ def bundle_list(output_format: str) -> None:
 
     Examples:
 
-        amplifier-server bundle list
-        amplifier-server bundle list --format json
+        amplifier-runtime bundle list
+        amplifier-runtime bundle list --format json
     """
 
     async def run() -> None:
@@ -608,8 +608,8 @@ def bundle_info(bundle_name: str, output_format: str) -> None:
 
     Examples:
 
-        amplifier-server bundle info foundation
-        amplifier-server bundle info amplifier-dev --format json
+        amplifier-runtime bundle info foundation
+        amplifier-runtime bundle info amplifier-dev --format json
     """
 
     async def run() -> None:
@@ -677,7 +677,7 @@ def provider_list(output_format: str) -> None:
 
     Examples:
 
-        amplifier-server provider list
+        amplifier-runtime provider list
     """
     import os
 
@@ -720,8 +720,8 @@ def provider_check(provider_name: str) -> None:
 
     Examples:
 
-        amplifier-server provider check anthropic
-        amplifier-server provider check openai
+        amplifier-runtime provider check anthropic
+        amplifier-runtime provider check openai
     """
     import os
 
@@ -759,14 +759,14 @@ def show_config(output_json: bool) -> None:
 
     Examples:
 
-        amplifier-server config
-        amplifier-server config --json
+        amplifier-runtime config
+        amplifier-runtime config --json
     """
     import os
     from pathlib import Path
 
     config = {
-        "data_dir": str(Path.home() / ".amplifier-server"),
+        "data_dir": str(Path.home() / ".amplifier-runtime"),
         "default_bundle": os.getenv("AMPLIFIER_BUNDLE", "foundation"),
         "default_provider": None,
         "providers_configured": [],

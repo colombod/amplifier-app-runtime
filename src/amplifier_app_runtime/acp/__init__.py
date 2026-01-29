@@ -1,7 +1,7 @@
 """Agent Client Protocol (ACP) implementation.
 
 ACP standardizes communication between code editors and AI coding agents.
-This module provides full ACP support for amplifier-server-app, enabling
+This module provides full ACP support for amplifier-runtime-app, enabling
 compatibility with editors like Zed, JetBrains AI Assistant, Neovim, etc.
 
 Protocol: JSON-RPC 2.0 over stdio (local) or HTTP/WebSocket (remote)

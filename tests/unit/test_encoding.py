@@ -1,7 +1,7 @@
 """Unit tests for UTF-8 encoding and cross-platform handling."""
 
-from amplifier_server_app.protocol.commands import Command
-from amplifier_server_app.protocol.events import Event
+from amplifier_app_runtime.protocol.commands import Command
+from amplifier_app_runtime.protocol.events import Event
 
 
 class TestUTF8Encoding:

@@ -35,12 +35,12 @@ ACP is a standardized protocol for communication between code editors and AI cod
 
 ```bash
 # Install
-git clone https://github.com/colombod/amplifier-server-app.git
-cd amplifier-server-app
+git clone https://github.com/microsoft/amplifier-app-runtime.git
+cd amplifier-app-runtime
 uv pip install -e .
 
 # Run with ACP enabled
-amplifier-server serve --acp-enabled
+amplifier-runtime serve --acp-enabled
 
 # Test it works
 curl http://localhost:4096/health
@@ -59,17 +59,17 @@ This implementation uses the [official ACP Python SDK](https://github.com/agentc
 
 | Module | Description |
 |--------|-------------|
-| `amplifier_server_app.acp.agent` | Core ACP agent implementation |
-| `amplifier_server_app.acp.routes` | HTTP/SSE/WebSocket endpoints |
-| `amplifier_server_app.acp.tools` | Client-side tools (terminal, filesystem) |
-| `amplifier_server_app.acp.__main__` | Stdio entry point with protocol isolation |
+| `amplifier_app_runtime.acp.agent` | Core ACP agent implementation |
+| `amplifier_app_runtime.acp.routes` | HTTP/SSE/WebSocket endpoints |
+| `amplifier_app_runtime.acp.tools` | Client-side tools (terminal, filesystem) |
+| `amplifier_app_runtime.acp.__main__` | Stdio entry point with protocol isolation |
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/colombod/amplifier-server-app.git
-cd amplifier-server-app
+git clone https://github.com/microsoft/amplifier-app-runtime.git
+cd amplifier-app-runtime
 
 # Install with uv (recommended)
 uv pip install -e .
@@ -86,16 +86,16 @@ Start the server with ACP endpoints enabled using `--acp-enabled`:
 
 ```bash
 # Default port (4096) with ACP enabled
-amplifier-server serve --acp-enabled
+amplifier-runtime serve --acp-enabled
 
 # Custom port
-amplifier-server serve --acp-enabled --port 8080
+amplifier-runtime serve --acp-enabled --port 8080
 
 # Custom host and port (e.g., for external access)
-amplifier-server serve --acp-enabled --host 0.0.0.0 --port 8080
+amplifier-runtime serve --acp-enabled --host 0.0.0.0 --port 8080
 
 # Development mode with auto-reload
-amplifier-server serve --acp-enabled --reload
+amplifier-runtime serve --acp-enabled --reload
 ```
 
 > **Note:** The `--acp-enabled` flag is required to expose ACP endpoints. Without it, only the core HTTP API is available.
@@ -148,7 +148,7 @@ curl -X POST http://localhost:4096/acp/rpc \
   "result": {
     "protocolVersion": "2025-01-07",
     "agentInfo": {
-      "name": "amplifier-server",
+      "name": "amplifier-runtime",
       "version": "0.1.0"
     },
     "agentCapabilities": {
@@ -444,7 +444,7 @@ Example error response:
 lsof -i :4096
 
 # Try a different port
-amplifier-server serve --port 8080
+amplifier-runtime serve --port 8080
 ```
 
 ### Connection refused
@@ -454,7 +454,7 @@ amplifier-server serve --port 8080
 curl http://localhost:4096/health
 
 # Check server logs
-amplifier-server serve 2>&1 | tee server.log
+amplifier-runtime serve 2>&1 | tee server.log
 ```
 
 ### WebSocket connection fails
@@ -469,14 +469,14 @@ For editors that spawn agents as local subprocesses, use stdio mode:
 
 ```bash
 # Run agent over stdio (for editor subprocess integration)
-python -m amplifier_server_app.acp
+python -m amplifier_app_runtime.acp
 ```
 
 The agent communicates via JSON-RPC over stdin/stdout, with logs to stderr.
 
 ### CRITICAL: Stdio Protocol Isolation
 
-When using stdio transport, **stdout is exclusively reserved for JSON-RPC messages**. The entry point (`python -m amplifier_server_app.acp`) implements several layers of protection:
+When using stdio transport, **stdout is exclusively reserved for JSON-RPC messages**. The entry point (`python -m amplifier_app_runtime.acp`) implements several layers of protection:
 
 1. **JSON-RPC Stdout Filter**: Only valid JSON objects starting with `{` are allowed through to stdout. Any non-JSON content (log messages, print statements, etc.) is automatically redirected to stderr with a `[stdout-filtered]` prefix.
 

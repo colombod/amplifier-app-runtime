@@ -1,5 +1,5 @@
 [project]
-name = "amplifier-server-app"
+name = "amplifier-app-runtime"
 version = "0.1.0"
 description = "Amplifier backend server - HTTP API with event streaming for AI agent sessions"
 readme = "README.md"
@@ -35,13 +35,13 @@ http3 = [
 ]
 
 [project.scripts]
-amplifier-server = "amplifier_server_app.cli:main"
+amplifier-runtime = "amplifier_app_runtime.cli:main"
 
 [tool.uv]
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/amplifier_server_app"]
+packages = ["src/amplifier_app_runtime"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

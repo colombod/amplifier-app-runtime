@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from amplifier_server_app.protocols.hooks import StreamingHook
+from amplifier_app_runtime.protocols.hooks import StreamingHook
 
 # =============================================================================
 # StreamingHook Initialization Tests

@@ -68,7 +68,7 @@ class TestServerApprovalSystem:
 
     def test_approval_system_signature(self) -> None:
         """Verify ServerApprovalSystem has correct interface."""
-        from amplifier_server_app.protocols.approval import ServerApprovalSystem
+        from amplifier_app_runtime.protocols.approval import ServerApprovalSystem
 
         system = ServerApprovalSystem()
 
@@ -91,7 +91,7 @@ class TestServerApprovalSystem:
     @pytest.mark.anyio
     async def test_approval_default_without_send_fn(self) -> None:
         """Without send_fn, approval should return default."""
-        from amplifier_server_app.protocols.approval import ServerApprovalSystem
+        from amplifier_app_runtime.protocols.approval import ServerApprovalSystem
 
         system = ServerApprovalSystem(send_fn=None)
 
@@ -108,7 +108,7 @@ class TestServerApprovalSystem:
     @pytest.mark.anyio
     async def test_approval_sends_event(self, mock_send_fn: AsyncMock) -> None:
         """Approval should send event to client."""
-        from amplifier_server_app.protocols.approval import ServerApprovalSystem
+        from amplifier_app_runtime.protocols.approval import ServerApprovalSystem
 
         system = ServerApprovalSystem(send_fn=mock_send_fn)
 
@@ -142,7 +142,7 @@ class TestServerDisplaySystem:
 
     def test_display_system_signature(self) -> None:
         """Verify ServerDisplaySystem has correct interface."""
-        from amplifier_server_app.protocols.display import ServerDisplaySystem
+        from amplifier_app_runtime.protocols.display import ServerDisplaySystem
 
         system = ServerDisplaySystem()
 
@@ -158,7 +158,7 @@ class TestServerDisplaySystem:
     @pytest.mark.anyio
     async def test_display_without_send_fn(self) -> None:
         """Without send_fn, display should log but not fail."""
-        from amplifier_server_app.protocols.display import ServerDisplaySystem
+        from amplifier_app_runtime.protocols.display import ServerDisplaySystem
 
         system = ServerDisplaySystem(send_fn=None)
 
@@ -168,7 +168,7 @@ class TestServerDisplaySystem:
     @pytest.mark.anyio
     async def test_display_sends_event(self, mock_send_fn: AsyncMock) -> None:
         """Display should send event to client."""
-        from amplifier_server_app.protocols.display import ServerDisplaySystem
+        from amplifier_app_runtime.protocols.display import ServerDisplaySystem
 
         system = ServerDisplaySystem(send_fn=mock_send_fn)
 
@@ -183,7 +183,7 @@ class TestServerDisplaySystem:
 
     def test_nesting_depth(self) -> None:
         """Test nesting depth tracking."""
-        from amplifier_server_app.protocols.display import ServerDisplaySystem
+        from amplifier_app_runtime.protocols.display import ServerDisplaySystem
 
         system = ServerDisplaySystem(nesting_depth=0)
         assert system.nesting_depth == 0
@@ -208,7 +208,7 @@ class TestAppModuleResolver:
 
     def test_resolver_exists(self) -> None:
         """Verify resolver module is importable."""
-        from amplifier_server_app.resolvers import (
+        from amplifier_app_runtime.resolvers import (
             AppModuleResolver,
             FallbackResolver,
             ModuleResolutionError,
@@ -220,7 +220,7 @@ class TestAppModuleResolver:
 
     def test_fallback_resolver_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Fallback resolver should check environment variables."""
-        from amplifier_server_app.resolvers import FallbackResolver, FileSource
+        from amplifier_app_runtime.resolvers import FallbackResolver, FileSource
 
         # Set environment variable
         monkeypatch.setenv("AMPLIFIER_MODULE_TEST_MODULE", "/tmp/test-module")
@@ -234,7 +234,7 @@ class TestAppModuleResolver:
 
     def test_fallback_resolver_not_found(self) -> None:
         """Fallback resolver should raise clear error when module not found."""
-        from amplifier_server_app.resolvers import FallbackResolver, ModuleResolutionError
+        from amplifier_app_runtime.resolvers import FallbackResolver, ModuleResolutionError
 
         resolver = FallbackResolver()
 
@@ -258,7 +258,7 @@ class TestBundleManager:
     @pytest.mark.anyio
     async def test_manager_initialization(self) -> None:
         """Bundle manager should initialize successfully."""
-        from amplifier_server_app.bundle_manager import BundleManager
+        from amplifier_app_runtime.bundle_manager import BundleManager
 
         manager = BundleManager()
         await manager.initialize()
@@ -269,7 +269,7 @@ class TestBundleManager:
     @pytest.mark.anyio
     async def test_list_bundles(self) -> None:
         """Should list available bundles."""
-        from amplifier_server_app.bundle_manager import BundleManager
+        from amplifier_app_runtime.bundle_manager import BundleManager
 
         manager = BundleManager()
         bundles = await manager.list_bundles()
@@ -281,7 +281,7 @@ class TestBundleManager:
     @pytest.mark.anyio
     async def test_load_foundation_bundle(self) -> None:
         """Should load and prepare foundation bundle."""
-        from amplifier_server_app.bundle_manager import BundleManager
+        from amplifier_app_runtime.bundle_manager import BundleManager
 
         manager = BundleManager()
         prepared = await manager.load_and_prepare(bundle_name="foundation")
@@ -305,8 +305,8 @@ class TestManagedSessionWithAmplifier:
         self, tmp_session_dir: Path, mock_send_fn: AsyncMock
     ) -> None:
         """Session should initialize with real bundle."""
-        from amplifier_server_app.session import ManagedSession, SessionConfig
-        from amplifier_server_app.session_store import SessionStore
+        from amplifier_app_runtime.session import ManagedSession, SessionConfig
+        from amplifier_app_runtime.session_store import SessionStore
 
         store = SessionStore(tmp_session_dir)
 
@@ -330,9 +330,9 @@ class TestManagedSessionWithAmplifier:
         self, tmp_session_dir: Path, mock_send_fn: AsyncMock
     ) -> None:
         """Session should wrap resolver with AppModuleResolver."""
-        from amplifier_server_app.resolvers import AppModuleResolver
-        from amplifier_server_app.session import ManagedSession, SessionConfig
-        from amplifier_server_app.session_store import SessionStore
+        from amplifier_app_runtime.resolvers import AppModuleResolver
+        from amplifier_app_runtime.session import ManagedSession, SessionConfig
+        from amplifier_app_runtime.session_store import SessionStore
 
         store = SessionStore(tmp_session_dir)
 
@@ -368,8 +368,8 @@ class TestEndToEndWithProvider:
         self, tmp_session_dir: Path, mock_send_fn: AsyncMock
     ) -> None:
         """Execute a simple prompt with real provider."""
-        from amplifier_server_app.session import ManagedSession, SessionConfig
-        from amplifier_server_app.session_store import SessionStore
+        from amplifier_app_runtime.session import ManagedSession, SessionConfig
+        from amplifier_app_runtime.session_store import SessionStore
 
         store = SessionStore(tmp_session_dir)
 
@@ -399,8 +399,8 @@ class TestEndToEndWithProvider:
     @pytest.mark.timeout(60)
     async def test_streaming_events(self, tmp_session_dir: Path, mock_send_fn: AsyncMock) -> None:
         """Verify streaming events are emitted during execution."""
-        from amplifier_server_app.session import ManagedSession, SessionConfig
-        from amplifier_server_app.session_store import SessionStore
+        from amplifier_app_runtime.session import ManagedSession, SessionConfig
+        from amplifier_app_runtime.session_store import SessionStore
 
         store = SessionStore(tmp_session_dir)
 

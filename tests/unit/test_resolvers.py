@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from amplifier_server_app.resolvers import (
+from amplifier_app_runtime.resolvers import (
     AppModuleResolver,
     FallbackResolver,
     FileSource,

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from amplifier_server_app.bundle_manager import BundleInfo, BundleManager
+from amplifier_app_runtime.bundle_manager import BundleInfo, BundleManager
 
 # =============================================================================
 # BundleInfo Tests

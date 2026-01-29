@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from amplifier_server_app.acp import (
+from amplifier_app_runtime.acp import (
     PROTOCOL_VERSION,
     AgentCapabilities,
     AgentInfo,
@@ -32,13 +32,13 @@ from amplifier_server_app.acp import (
     ToolCall,
     ToolCallStatus,
 )
-from amplifier_server_app.acp.transport import (
+from amplifier_app_runtime.acp.transport import (
     HttpAcpTransport,
     JsonRpcProcessor,
     JsonRpcProtocolError,
     WebSocketAcpTransport,
 )
-from amplifier_server_app.acp.types import JsonRpcErrorCode
+from amplifier_app_runtime.acp.types import JsonRpcErrorCode
 
 # =============================================================================
 # JSON-RPC Types Tests
@@ -128,13 +128,13 @@ class TestAcpTypes:
         """InitializeResponse includes agent capabilities."""
         response = InitializeResponse(
             protocolVersion=PROTOCOL_VERSION,
-            agentInfo=AgentInfo(name="amplifier-server", version="0.1.0"),
+            agentInfo=AgentInfo(name="amplifier-runtime", version="0.1.0"),
             agentCapabilities=AgentCapabilities(loadSession=True),
         )
         data = response.model_dump(exclude_none=True)
 
         assert data["protocolVersion"] == PROTOCOL_VERSION
-        assert data["agentInfo"]["name"] == "amplifier-server"
+        assert data["agentInfo"]["name"] == "amplifier-runtime"
         assert data["agentCapabilities"]["loadSession"] is True
 
     def test_new_session_request(self) -> None:

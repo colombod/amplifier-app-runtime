@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from amplifier_server_app.session_store import SessionStore, is_top_level_session
+from amplifier_app_runtime.session_store import SessionStore, is_top_level_session
 
 if TYPE_CHECKING:
     pass

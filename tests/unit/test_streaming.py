@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from amplifier_server_app.protocols.streaming import (
+from amplifier_app_runtime.protocols.streaming import (
     DEFAULT_EVENTS_TO_CAPTURE,
     ServerStreamingHook,
     get_events_to_capture,

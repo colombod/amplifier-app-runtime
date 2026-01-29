@@ -16,8 +16,8 @@ A server application that exposes [Amplifier](https://github.com/microsoft/ampli
 
 ```bash
 # Clone the repository
-git clone https://github.com/colombod/amplifier-server-app.git
-cd amplifier-server-app
+git clone https://github.com/microsoft/amplifier-app-runtime.git
+cd amplifier-app-runtime
 
 # Install with uv (recommended)
 uv pip install -e .
@@ -30,7 +30,7 @@ pip install -e .
 
 ```bash
 # Start HTTP server with ACP support
-amplifier-server serve --acp-enabled
+amplifier-runtime serve --acp-enabled
 
 # Server is now running at http://localhost:4096
 ```
@@ -65,13 +65,13 @@ Best for: Web applications, remote IDE connections, multi-client scenarios.
 
 ```bash
 # Start server
-amplifier-server serve --acp-enabled
+amplifier-runtime serve --acp-enabled
 
 # Or with custom host/port
-amplifier-server serve --acp-enabled --host 0.0.0.0 --port 8080
+amplifier-runtime serve --acp-enabled --host 0.0.0.0 --port 8080
 
 # Development mode with auto-reload
-amplifier-server serve --acp-enabled --reload
+amplifier-runtime serve --acp-enabled --reload
 ```
 
 **Endpoints:**
@@ -89,7 +89,7 @@ Best for: IDE integrations that spawn the agent as a local subprocess.
 
 ```bash
 # Run agent over stdio
-python -m amplifier_server_app.acp
+python -m amplifier_app_runtime.acp
 ```
 
 The agent communicates via JSON-RPC over stdin/stdout. All logs go to stderr.
@@ -101,7 +101,7 @@ The agent communicates via JSON-RPC over stdin/stdout. All logs go to stderr.
   "assistant": {
     "provider": "acp",
     "acp": {
-      "command": ["python", "-m", "amplifier_server_app.acp"]
+      "command": ["python", "-m", "amplifier_app_runtime.acp"]
     }
   }
 }
@@ -132,7 +132,7 @@ curl -X POST http://localhost:4096/acp/rpc \
 #   "id": "1",
 #   "result": {
 #     "protocolVersion": 1,
-#     "agentInfo": {"name": "amplifier-server", "version": "0.1.0"},
+#     "agentInfo": {"name": "amplifier-runtime", "version": "0.1.0"},
 #     "agentCapabilities": {
 #       "loadSession": true,
 #       "mcpCapabilities": {"http": false, "sse": true},
@@ -359,7 +359,7 @@ uv run ruff format src/
 ## Project Structure
 
 ```
-src/amplifier_server_app/
+src/amplifier_app_runtime/
 ├── acp/               # Agent Client Protocol implementation
 │   ├── agent.py       # ACP agent (SDK-based)
 │   ├── routes.py      # HTTP/SSE/WebSocket endpoints

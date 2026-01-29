@@ -29,7 +29,7 @@ from .websocket import (
 )
 
 # Note: stdio_adapter is imported separately to avoid circular imports
-# Use: from amplifier_server_app.transport.stdio_adapter import StdioProtocolAdapter
+# Use: from amplifier_app_runtime.transport.stdio_adapter import StdioProtocolAdapter
 
 __all__ = [
     # Base abstractions

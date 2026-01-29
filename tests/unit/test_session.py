@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_server_app.session import (
+from amplifier_app_runtime.session import (
     ManagedSession,
     SessionConfig,
     SessionManager,
     SessionMetadata,
     SessionState,
 )
-from amplifier_server_app.session_store import SessionStore
-from amplifier_server_app.transport.base import Event
+from amplifier_app_runtime.session_store import SessionStore
+from amplifier_app_runtime.transport.base import Event
 
 # =============================================================================
 # SessionState Tests

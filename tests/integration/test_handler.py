@@ -7,8 +7,8 @@ providing realistic behavior without requiring the full Amplifier stack.
 
 import pytest
 
-from amplifier_server_app.protocol import Command, CommandHandler, CommandType, Event
-from amplifier_server_app.session import SessionManager
+from amplifier_app_runtime.protocol import Command, CommandHandler, CommandType, Event
+from amplifier_app_runtime.session import SessionManager
 
 # =============================================================================
 # Fixtures

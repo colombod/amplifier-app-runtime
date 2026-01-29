@@ -305,15 +305,15 @@ async def run_acp_tools_e2e_test() -> dict[str, Any]:
     }
 
     # Use the package entry point for proper stdio isolation
-    # python -m amplifier_server_app.acp configures logging to stderr BEFORE
+    # python -m amplifier_app_runtime.acp configures logging to stderr BEFORE
     # importing any modules, ensuring stdout is clean for JSON-RPC
-    logger.info("Starting agent: python -m amplifier_server_app.acp")
+    logger.info("Starting agent: python -m amplifier_app_runtime.acp")
 
     # Spawn agent subprocess using package entry point
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "amplifier_server_app.acp",
+        "amplifier_app_runtime.acp",
         stdin=aio_subprocess.PIPE,
         stdout=aio_subprocess.PIPE,
         stderr=aio_subprocess.PIPE,

@@ -46,11 +46,11 @@ class StdioTransport(Transport):
 
     Example usage:
         # Start server in stdio mode
-        $ amplifier-server --stdio
+        $ amplifier-runtime --stdio
 
         # From parent process (Python)
         proc = subprocess.Popen(
-            ["amplifier-server", "--stdio"],
+            ["amplifier-runtime", "--stdio"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
         )

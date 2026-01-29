@@ -8,7 +8,7 @@ protocol messages. Any log output to stdout will corrupt the protocol and
 cause JSON parse errors on the client side.
 
 Usage:
-    python -m amplifier_server_app.acp
+    python -m amplifier_app_runtime.acp
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 
-from amplifier_server_app.protocol.events import Event, EventType
+from amplifier_app_runtime.protocol.events import Event, EventType
 
 
 class TestEventCreation:

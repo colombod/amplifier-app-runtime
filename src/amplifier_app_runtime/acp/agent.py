@@ -114,7 +114,7 @@ class AmplifierAgent(Agent):
         return InitializeResponse(
             protocolVersion=PROTOCOL_VERSION,
             agentInfo=Implementation(
-                name="amplifier-server",
+                name="amplifier-runtime",
                 version="0.1.0",
             ),
             agentCapabilities=AgentCapabilities(
@@ -669,7 +669,7 @@ async def run_stdio_agent() -> None:
     all transport complexity automatically.
 
     Usage:
-        python -m amplifier_server_app.acp.agent
+        python -m amplifier_app_runtime.acp.agent
     """
     from acp import run_agent  # type: ignore[import-untyped]
 
@@ -680,7 +680,7 @@ async def run_stdio_agent() -> None:
 
 if __name__ == "__main__":
     # Direct execution is deprecated. Use the package entry point instead:
-    #   python -m amplifier_server_app.acp
+    #   python -m amplifier_app_runtime.acp
     #
     # The package entry point properly configures logging to stderr BEFORE
     # importing any modules, which is required for stdio transport to work
@@ -689,7 +689,7 @@ if __name__ == "__main__":
 
     print(
         "WARNING: Direct execution of agent.py is deprecated.\n"
-        "Use: python -m amplifier_server_app.acp\n"
+        "Use: python -m amplifier_app_runtime.acp\n"
         "This ensures proper stdio isolation for ACP protocol.",
         file=sys.stderr,
     )

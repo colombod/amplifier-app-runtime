@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from amplifier_server_app.protocols.spawn import (
+from amplifier_app_runtime.protocols.spawn import (
     ServerSpawnManager,
     register_spawn_capability,
 )

@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from amplifier_server_app.transport.stdio_adapter import StdioProtocolAdapter
+from amplifier_app_runtime.transport.stdio_adapter import StdioProtocolAdapter
 
 # =============================================================================
 # Helpers

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from amplifier_server_app.protocol.commands import Command, CommandType
+from amplifier_app_runtime.protocol.commands import Command, CommandType
 
 
 class TestCommandCreation:

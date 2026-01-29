@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from amplifier_server_app.routes.session import (
+from amplifier_app_runtime.routes.session import (
     ApprovalRequest,
     CreateSessionRequest,
     PromptRequest,
@@ -84,11 +84,11 @@ class TestListSessionsHandler:
     @pytest.mark.asyncio
     async def test_list_sessions_returns_json(self) -> None:
         """list_sessions returns JSON response."""
-        from amplifier_server_app.routes.session import list_sessions
+        from amplifier_app_runtime.routes.session import list_sessions
 
         mock_request = MagicMock()
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.list_sessions = AsyncMock(return_value=[])
 
             response = await list_sessions(mock_request)
@@ -99,7 +99,7 @@ class TestListSessionsHandler:
     @pytest.mark.asyncio
     async def test_list_sessions_returns_sessions(self) -> None:
         """list_sessions returns session list."""
-        from amplifier_server_app.routes.session import list_sessions
+        from amplifier_app_runtime.routes.session import list_sessions
 
         mock_request = MagicMock()
         mock_sessions = [
@@ -107,7 +107,7 @@ class TestListSessionsHandler:
             {"id": "sess_2", "title": "Session 2"},
         ]
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.list_sessions = AsyncMock(return_value=mock_sessions)
 
             response = await list_sessions(mock_request)
@@ -128,7 +128,7 @@ class TestCreateSessionHandler:
     @pytest.mark.asyncio
     async def test_create_session_returns_created(self) -> None:
         """create_session returns 201 on success."""
-        from amplifier_server_app.routes.session import create_session
+        from amplifier_app_runtime.routes.session import create_session
 
         mock_request = MagicMock()
         mock_request.body = AsyncMock(return_value=b'{"title": "Test"}')
@@ -140,7 +140,7 @@ class TestCreateSessionHandler:
         mock_session.to_dict = MagicMock(return_value={"id": "sess_123", "title": "Test"})
         mock_session.initialize = AsyncMock()
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.create = AsyncMock(return_value=mock_session)
 
             response = await create_session(mock_request)
@@ -150,7 +150,7 @@ class TestCreateSessionHandler:
     @pytest.mark.asyncio
     async def test_create_session_passes_config(self) -> None:
         """create_session passes configuration to manager."""
-        from amplifier_server_app.routes.session import create_session
+        from amplifier_app_runtime.routes.session import create_session
 
         mock_request = MagicMock()
         mock_request.body = AsyncMock(return_value=b'{"title": "Test"}')
@@ -167,7 +167,7 @@ class TestCreateSessionHandler:
         mock_session.to_dict = MagicMock(return_value={"id": "sess_123"})
         mock_session.initialize = AsyncMock()
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.create = AsyncMock(return_value=mock_session)
 
             await create_session(mock_request)
@@ -186,7 +186,7 @@ class TestGetSessionHandler:
     @pytest.mark.asyncio
     async def test_get_session_returns_session(self) -> None:
         """get_session returns session data."""
-        from amplifier_server_app.routes.session import get_session
+        from amplifier_app_runtime.routes.session import get_session
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "sess_123"}
@@ -196,7 +196,7 @@ class TestGetSessionHandler:
         mock_session.title = "Test"
         mock_session.to_dict = MagicMock(return_value={"id": "sess_123", "title": "Test"})
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=mock_session)
 
             response = await get_session(mock_request)
@@ -206,12 +206,12 @@ class TestGetSessionHandler:
     @pytest.mark.asyncio
     async def test_get_session_not_found(self) -> None:
         """get_session returns 404 for unknown session."""
-        from amplifier_server_app.routes.session import get_session
+        from amplifier_app_runtime.routes.session import get_session
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "unknown"}
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=None)
 
             response = await get_session(mock_request)
@@ -230,12 +230,12 @@ class TestDeleteSessionHandler:
     @pytest.mark.asyncio
     async def test_delete_session_returns_no_content(self) -> None:
         """delete_session returns 204 on success."""
-        from amplifier_server_app.routes.session import delete_session
+        from amplifier_app_runtime.routes.session import delete_session
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "sess_123"}
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.delete = AsyncMock(return_value=True)
 
             response = await delete_session(mock_request)
@@ -246,12 +246,12 @@ class TestDeleteSessionHandler:
     @pytest.mark.asyncio
     async def test_delete_session_not_found(self) -> None:
         """delete_session returns 404 for unknown session."""
-        from amplifier_server_app.routes.session import delete_session
+        from amplifier_app_runtime.routes.session import delete_session
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "unknown"}
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.delete = AsyncMock(return_value=False)
 
             response = await delete_session(mock_request)
@@ -272,7 +272,7 @@ class TestPromptHandler:
         """send_prompt endpoint returns streaming response."""
         from starlette.responses import StreamingResponse
 
-        from amplifier_server_app.routes.session import send_prompt
+        from amplifier_app_runtime.routes.session import send_prompt
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "sess_123"}
@@ -281,7 +281,7 @@ class TestPromptHandler:
         mock_session = MagicMock()
         mock_session.is_running = False
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=mock_session)
 
             response = await send_prompt(mock_request)
@@ -292,13 +292,13 @@ class TestPromptHandler:
     @pytest.mark.asyncio
     async def test_send_prompt_session_not_found(self) -> None:
         """send_prompt returns 404 for unknown session."""
-        from amplifier_server_app.routes.session import send_prompt
+        from amplifier_app_runtime.routes.session import send_prompt
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "unknown"}
         mock_request.json = AsyncMock(return_value={"content": "Hello"})
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=None)
 
             response = await send_prompt(mock_request)
@@ -317,7 +317,7 @@ class TestApprovalHandler:
     @pytest.mark.asyncio
     async def test_handle_approval_success(self) -> None:
         """handle_approval returns success on valid approval."""
-        from amplifier_server_app.routes.session import handle_approval
+        from amplifier_app_runtime.routes.session import handle_approval
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "sess_123"}
@@ -326,7 +326,7 @@ class TestApprovalHandler:
         mock_session = MagicMock()
         mock_session.handle_approval = AsyncMock(return_value=True)
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=mock_session)
 
             response = await handle_approval(mock_request)
@@ -336,13 +336,13 @@ class TestApprovalHandler:
     @pytest.mark.asyncio
     async def test_handle_approval_session_not_found(self) -> None:
         """handle_approval returns 404 for unknown session."""
-        from amplifier_server_app.routes.session import handle_approval
+        from amplifier_app_runtime.routes.session import handle_approval
 
         mock_request = MagicMock()
         mock_request.path_params = {"session_id": "unknown"}
         mock_request.json = AsyncMock(return_value={"request_id": "req_1", "choice": "approve"})
 
-        with patch("amplifier_server_app.routes.session.session_manager") as mock_manager:
+        with patch("amplifier_app_runtime.routes.session.session_manager") as mock_manager:
             mock_manager.get = AsyncMock(return_value=None)
 
             response = await handle_approval(mock_request)

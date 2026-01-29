@@ -41,28 +41,7 @@ wheels = [
 ]
 
 [[package]]
-name = "amplifier-core"
-version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-core?branch=main#976fb87335ffe398cf0c1bd1bcd3c2f2c154fc3c" }
-dependencies = [
-    { name = "click" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "tomli" },
-    { name = "typing-extensions" },
-]
-
-[[package]]
-name = "amplifier-foundation"
-version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#4bb3d825ff2f57cc7ad2e92b708b93f2cd1ea33b" }
-dependencies = [
-    { name = "amplifier-core" },
-    { name = "pyyaml" },
-]
-
-[[package]]
-name = "amplifier-server-app"
+name = "amplifier-app-runtime"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -119,6 +98,27 @@ dev = [
     { name = "pytest-anyio", specifier = ">=0.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "ruff", specifier = ">=0.5.0" },
+]
+
+[[package]]
+name = "amplifier-core"
+version = "1.0.0"
+source = { git = "https://github.com/microsoft/amplifier-core?branch=main#976fb87335ffe398cf0c1bd1bcd3c2f2c154fc3c" }
+dependencies = [
+    { name = "click" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "tomli" },
+    { name = "typing-extensions" },
+]
+
+[[package]]
+name = "amplifier-foundation"
+version = "1.0.0"
+source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#4bb3d825ff2f57cc7ad2e92b708b93f2cd1ea33b" }
+dependencies = [
+    { name = "amplifier-core" },
+    { name = "pyyaml" },
 ]
 
 [[package]]

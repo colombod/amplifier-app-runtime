@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from amplifier_server_app.acp.tools import (
+from amplifier_app_runtime.acp.tools import (
     IdeReadFileTool,
     IdeTerminalTool,
     IdeWriteFileTool,
