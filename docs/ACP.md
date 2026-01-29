@@ -19,6 +19,19 @@ ACP enables integration with:
 
 **Protocol Version:** `2025-01-07`
 
+## Implementation
+
+This implementation uses the [official ACP Python SDK](https://github.com/agentclientprotocol/python-sdk) for protocol compliance:
+
+- `AmplifierAgent` - SDK-based `Agent` interface implementation
+- `conn.session_update()` - Proper streaming update delivery
+- `run_agent()` - SDK's stdio transport handler
+
+**Key modules:**
+- `amplifier_server_app.acp.agent` - Core agent implementation
+- `amplifier_server_app.acp.routes` - HTTP/SSE/WebSocket endpoints
+- `amplifier_server_app.acp.transport` - Transport utilities
+
 ## Installation
 
 ```bash
@@ -415,3 +428,29 @@ amplifier-server serve 2>&1 | tee server.log
 Ensure you're using the correct URL scheme:
 - HTTP server: `ws://localhost:4096/acp/ws`
 - HTTPS server: `wss://localhost:4096/acp/ws`
+
+## Stdio Mode (Local Agents)
+
+For editors that spawn agents as local subprocesses, use stdio mode:
+
+```bash
+# Run agent over stdio (for editor subprocess integration)
+python -m amplifier_server_app.acp.agent
+```
+
+The agent communicates via JSON-RPC over stdin/stdout, with logs to stderr.
+
+## Testing
+
+Run the end-to-end ACP test:
+
+```bash
+# From repository root
+uv run python tests/acp/test_e2e_acp.py
+```
+
+This test:
+1. Spawns the agent as a subprocess (stdio transport)
+2. Uses the official ACP SDK client
+3. Runs full protocol flow: initialize → session/new → prompt → response
+4. Verifies streaming updates are received correctly

@@ -6,7 +6,7 @@ Captures amplifier-core events and forwards them via the transport layer.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..transport.base import Event
@@ -50,14 +50,14 @@ class ServerStreamingHook:
             data: The event data
 
         Returns:
-            Hook result (empty dict to not modify event flow)
+            HookResult-compatible dict with action="continue"
         """
         if not self._send_fn:
-            return {}
+            return {"action": "continue"}
 
         # Skip thinking events if disabled
         if not self._show_thinking and event_type.startswith("thinking:"):
-            return {}
+            return {"action": "continue"}
 
         try:
             # Convert to transport Event
@@ -73,7 +73,8 @@ class ServerStreamingHook:
         except Exception as e:
             logger.warning(f"Failed to send event {event_type}: {e}")
 
-        return {}
+        # Always continue - streaming is observational
+        return {"action": "continue"}
 
     def reset_sequence(self) -> None:
         """Reset the sequence counter for a new prompt."""

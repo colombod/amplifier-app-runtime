@@ -155,43 +155,46 @@ class ManagedSession:
                 )
                 self._spawn_manager = ServerSpawnManager()
 
-                # Try to create real AmplifierSession
+                # Create real AmplifierSession - NO MOCK MODE
+                # Sessions require a real bundle and provider configuration
                 if prepared_bundle:
                     self._prepared_bundle = prepared_bundle
                     await self._create_amplifier_session(
                         prepared_bundle,
                         initial_transcript,
                     )
-                else:
-                    # Try to load bundle if specified
-                    if self.config.bundle:
-                        try:
-                            from .bundle_manager import BundleManager
+                elif self.config.bundle:
+                    # Load bundle if specified
+                    try:
+                        from .bundle_manager import BundleManager
 
-                            manager = BundleManager()
-                            prepared = await manager.load_and_prepare(
-                                bundle_name=self.config.bundle,
-                                behaviors=self.config.behaviors,
-                                working_directory=Path(self.metadata.cwd)
-                                if self.metadata.cwd
-                                else None,
-                            )
-                            self._prepared_bundle = prepared
-                            await self._create_amplifier_session(prepared, initial_transcript)
-                        except Exception as e:
-                            # Bundle loading failed - fall back to mock mode
-                            # This catches ImportError, RuntimeError, BundleNotFoundError, etc.
-                            logger.warning(
-                                f"Session {self.session_id} running in mock mode "
-                                f"(bundle loading failed: {e})"
-                            )
-                            self._amplifier_session = None
-                    else:
-                        # No bundle - mock mode
-                        logger.warning(
-                            f"Session {self.session_id} running in mock mode (no bundle specified)"
+                        manager = BundleManager()
+                        prepared = await manager.load_and_prepare(
+                            bundle_name=self.config.bundle,
+                            behaviors=self.config.behaviors,
+                            working_directory=Path(self.metadata.cwd)
+                            if self.metadata.cwd
+                            else None,
                         )
-                        self._amplifier_session = None
+                        self._prepared_bundle = prepared
+                        await self._create_amplifier_session(prepared, initial_transcript)
+                    except Exception as e:
+                        # Bundle loading failed - fail clearly, no silent mock fallback
+                        logger.error(
+                            f"Session {self.session_id} failed to load bundle "
+                            f"'{self.config.bundle}': {e}"
+                        )
+                        raise RuntimeError(
+                            f"Failed to load bundle '{self.config.bundle}'. "
+                            f"Ensure the bundle exists and providers are configured "
+                            f"(ANTHROPIC_API_KEY or OPENAI_API_KEY). Error: {e}"
+                        ) from e
+                else:
+                    # No bundle specified - fail clearly
+                    raise RuntimeError(
+                        f"Session {self.session_id} requires a bundle to be specified. "
+                        "Pass a bundle name in SessionConfig or a prepared_bundle."
+                    )
 
                 # Restore transcript if provided and not already restored
                 if initial_transcript and not self._messages:
@@ -265,11 +268,14 @@ class ManagedSession:
             logger.info(f"Session {self.session_id} initialized with amplifier-core")
 
         except ImportError as e:
-            logger.warning(
-                f"Session {self.session_id} running in mock mode "
-                f"(amplifier-core/foundation not available): {e}"
+            # No fallback to mock - fail clearly if dependencies missing
+            logger.error(
+                f"Session {self.session_id} failed: amplifier-core/foundation not available: {e}"
             )
-            self._amplifier_session = None
+            raise RuntimeError(
+                f"Failed to create AmplifierSession: {e}. "
+                "Ensure amplifier-core and amplifier-foundation are installed."
+            ) from e
 
     async def _restore_transcript(
         self,
@@ -356,23 +362,20 @@ class ManagedSession:
         response_text = ""
 
         try:
-            if self._amplifier_session:
-                # Real execution with amplifier-core
-                async for event in self._execute_with_amplifier(prompt):
-                    # Capture response text from content blocks
-                    if event.type == "content_block:end":
-                        block = event.properties.get("block", {})
-                        if "text" in block:
-                            response_text += block["text"]
-                    yield event
-            else:
-                # Mock execution for testing
-                async for event in self._execute_mock(prompt):
-                    if event.type == "content_block:end":
-                        block = event.properties.get("block", {})
-                        if "text" in block:
-                            response_text += block["text"]
-                    yield event
+            if not self._amplifier_session:
+                raise RuntimeError(
+                    f"Session {self.session_id} not properly initialized. "
+                    "AmplifierSession is required for execution."
+                )
+
+            # Real execution with amplifier-core
+            async for event in self._execute_with_amplifier(prompt):
+                # Capture response text from content blocks
+                if event.type == "content_block:end":
+                    block = event.properties.get("block", {})
+                    if "text" in block:
+                        response_text += block["text"]
+                yield event
 
             # Record assistant message
             if response_text:
@@ -464,41 +467,6 @@ class ManagedSession:
         except Exception as e:
             logger.error(f"Execution error in session {self.session_id}: {e}")
             raise
-
-    async def _execute_mock(self, prompt: str) -> AsyncIterator[Event]:
-        """Execute prompt in mock mode (without amplifier-core)."""
-        yield Event(
-            type="content_block:start",
-            properties={
-                "session_id": self.session_id,
-                "block_type": "text",
-                "index": 0,
-            },
-        )
-
-        # Simulate streaming response
-        response = f"[Mock mode - amplifier-core not loaded]\nReceived prompt: {prompt}"
-        for _i, char in enumerate(response):
-            if self._cancel_event.is_set():
-                break
-            yield Event(
-                type="content_block:delta",
-                properties={
-                    "session_id": self.session_id,
-                    "index": 0,
-                    "delta": {"text": char},
-                },
-            )
-            await asyncio.sleep(0.02)
-
-        yield Event(
-            type="content_block:end",
-            properties={
-                "session_id": self.session_id,
-                "index": 0,
-                "block": {"text": response},
-            },
-        )
 
     async def cancel(self) -> None:
         """Cancel the current execution."""

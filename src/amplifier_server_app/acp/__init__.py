@@ -38,7 +38,7 @@ from acp.schema import (  # type: ignore[import-untyped]
     ToolCallUpdate,
 )
 
-from .handler import AcpHandler, AcpSession
+from .agent import AmplifierAgent, AmplifierAgentSession, run_stdio_agent
 from .routes import acp_routes, run_acp_stdio
 from .transport import (
     AcpTransport,
@@ -53,9 +53,10 @@ from .transport import (
 from .types import ContentBlock, SessionUpdate
 
 __all__ = [
-    # Handler & Session
-    "AcpHandler",
-    "AcpSession",
+    # Agent & Session (new SDK-based implementation)
+    "AmplifierAgent",
+    "AmplifierAgentSession",
+    "run_stdio_agent",
     # Routes
     "acp_routes",
     "run_acp_stdio",
