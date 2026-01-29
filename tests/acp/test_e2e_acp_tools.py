@@ -15,8 +15,6 @@ import asyncio.subprocess as aio_subprocess
 import logging
 import os
 import sys
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -32,45 +30,19 @@ from acp.schema import (  # type: ignore[import-untyped]
     AgentMessageChunk,
     AgentThoughtChunk,
     ClientCapabilities,
+    CreateTerminalResponse,
     FileSystemCapability,
     Implementation,
+    ReadTextFileResponse,
+    TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
+    WaitForTerminalExitResponse,
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class TerminalCreateResult:
-    """Result from terminal/create."""
-
-    terminal_id: str
-
-
-@dataclass
-class TerminalExitResult:
-    """Result from terminal/wait_for_exit."""
-
-    exit_code: int
-    signal: str | None = None
-
-
-@dataclass
-class TerminalOutputResult:
-    """Result from terminal/output."""
-
-    output: str
-    truncated: bool = False
-
-
-@dataclass
-class ReadFileResult:
-    """Result from fs/read_text_file."""
-
-    content: str
 
 
 class AcpToolsTestClient(Client):
@@ -151,7 +123,7 @@ class AcpToolsTestClient(Client):
         cwd: str | None = None,
         env: list[dict[str, str]] | None = None,
         **kwargs: Any,
-    ) -> TerminalCreateResult:
+    ) -> CreateTerminalResponse:
         """Handle terminal/create - called by ide_terminal tool."""
         self._terminal_counter += 1
         terminal_id = f"test_term_{self._terminal_counter}"
@@ -167,14 +139,14 @@ class AcpToolsTestClient(Client):
         self.terminal_creates.append(call_info)
         logger.info(f"✅ terminal/create: {command} {args} -> {terminal_id}")
 
-        return TerminalCreateResult(terminal_id=terminal_id)
+        return CreateTerminalResponse(terminal_id=terminal_id)
 
     async def wait_for_terminal_exit(
         self,
         session_id: str,
         terminal_id: str,
         **kwargs: Any,
-    ) -> TerminalExitResult:
+    ) -> WaitForTerminalExitResponse:
         """Handle terminal/wait_for_exit."""
         self.terminal_waits.append(
             {
@@ -185,14 +157,14 @@ class AcpToolsTestClient(Client):
         logger.info(f"✅ terminal/wait_for_exit: {terminal_id}")
 
         # Simulate successful completion
-        return TerminalExitResult(exit_code=0)
+        return WaitForTerminalExitResponse(exit_code=0)
 
     async def terminal_output(
         self,
         session_id: str,
         terminal_id: str,
         **kwargs: Any,
-    ) -> TerminalOutputResult:
+    ) -> TerminalOutputResponse:
         """Handle terminal/output."""
         self.terminal_outputs.append(
             {
@@ -208,9 +180,9 @@ class AcpToolsTestClient(Client):
                 args = create.get("args", [])
                 output = f"Mock output for: {cmd} {' '.join(args)}\nSuccess!\n"
                 logger.info(f"✅ terminal/output: {terminal_id} -> {len(output)} bytes")
-                return TerminalOutputResult(output=output)
+                return TerminalOutputResponse(output=output, truncated=False)
 
-        return TerminalOutputResult(output="Unknown terminal")
+        return TerminalOutputResponse(output="Unknown terminal", truncated=False)
 
     async def release_terminal(
         self,
@@ -253,7 +225,7 @@ class AcpToolsTestClient(Client):
         line: int | None = None,
         limit: int | None = None,
         **kwargs: Any,
-    ) -> ReadFileResult:
+    ) -> ReadTextFileResponse:
         """Handle fs/read_text_file - called by ide_read_file tool."""
         self.file_reads.append(
             {
@@ -267,7 +239,7 @@ class AcpToolsTestClient(Client):
         content = self.mock_files.get(path, f"File not found: {path}")
         logger.info(f"✅ fs/read_text_file: {path} -> {len(content)} bytes")
 
-        return ReadFileResult(content=content)
+        return ReadTextFileResponse(content=content)
 
     async def write_text_file(
         self,
@@ -332,21 +304,16 @@ async def run_acp_tools_e2e_test() -> dict[str, Any]:
         "error": None,
     }
 
-    # Path to agent module
-    agent_module = (
-        Path(__file__).parent.parent.parent / "src" / "amplifier_server_app" / "acp" / "agent.py"
-    )
+    # Use the package entry point for proper stdio isolation
+    # python -m amplifier_server_app.acp configures logging to stderr BEFORE
+    # importing any modules, ensuring stdout is clean for JSON-RPC
+    logger.info("Starting agent: python -m amplifier_server_app.acp")
 
-    if not agent_module.exists():
-        results["error"] = f"Agent module not found: {agent_module}"
-        return results
-
-    logger.info(f"Starting agent: {agent_module}")
-
-    # Spawn agent subprocess
+    # Spawn agent subprocess using package entry point
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(agent_module),
+        "-m",
+        "amplifier_server_app.acp",
         stdin=aio_subprocess.PIPE,
         stdout=aio_subprocess.PIPE,
         stderr=aio_subprocess.PIPE,

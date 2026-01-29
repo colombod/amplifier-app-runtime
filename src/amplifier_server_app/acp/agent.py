@@ -679,24 +679,25 @@ async def run_stdio_agent() -> None:
 
 
 if __name__ == "__main__":
+    # Direct execution is deprecated. Use the package entry point instead:
+    #   python -m amplifier_server_app.acp
+    #
+    # The package entry point properly configures logging to stderr BEFORE
+    # importing any modules, which is required for stdio transport to work
+    # correctly (stdout must be reserved for JSON-RPC messages only).
     import sys
-    from pathlib import Path
 
-    # Fix imports when running as script
-    # Add the src directory to path so absolute imports work
-    _src_dir = Path(__file__).resolve().parent.parent.parent
-    if str(_src_dir) not in sys.path:
-        sys.path.insert(0, str(_src_dir))
+    print(
+        "WARNING: Direct execution of agent.py is deprecated.\n"
+        "Use: python -m amplifier_server_app.acp\n"
+        "This ensures proper stdio isolation for ACP protocol.",
+        file=sys.stderr,
+    )
 
+    # Still run for backward compatibility, but logging may not be properly isolated
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        stream=sys.stderr,  # Log to stderr, keep stdout for JSON-RPC
+        stream=sys.stderr,
     )
-
-    # Re-import after fixing path (for the relative imports in new_session etc.)
-    # Use importlib to ensure fresh import with correct package context
-    import importlib
-
-    agent_module = importlib.import_module("amplifier_server_app.acp.agent")
-    asyncio.run(agent_module.run_stdio_agent())
+    asyncio.run(run_stdio_agent())

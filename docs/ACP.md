@@ -435,10 +435,54 @@ For editors that spawn agents as local subprocesses, use stdio mode:
 
 ```bash
 # Run agent over stdio (for editor subprocess integration)
-python -m amplifier_server_app.acp.agent
+python -m amplifier_server_app.acp
 ```
 
 The agent communicates via JSON-RPC over stdin/stdout, with logs to stderr.
+
+### CRITICAL: Stdio Protocol Isolation
+
+When using stdio transport, **stdout is exclusively reserved for JSON-RPC messages**. The entry point (`python -m amplifier_server_app.acp`) implements several layers of protection:
+
+1. **JSON-RPC Stdout Filter**: Only valid JSON objects starting with `{` are allowed through to stdout. Any non-JSON content (log messages, print statements, etc.) is automatically redirected to stderr with a `[stdout-filtered]` prefix.
+
+2. **Logging Configuration**: All Python logging is configured to use stderr before any other modules are imported.
+
+3. **Route Namespacing**: When ACP is enabled via `--acp-enabled`, Amplifier's internal HTTP/WS/SSE routes are namespaced under `/amplifier/` to prevent conflicts with ACP routes.
+
+This ensures the ACP protocol is never corrupted by stray output.
+
+### Architecture: ACP vs Amplifier Transports
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     ACP ENABLED MODE                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  STDIO (stdin/stdout)                                          │
+│  └── Exclusively owned by ACP JSON-RPC protocol                │
+│      └── JsonRpcStdoutFilter ensures only valid JSON passes    │
+│                                                                 │
+│  STDERR                                                        │
+│  └── All logging, diagnostics, filtered content                │
+│                                                                 │
+│  HTTP Routes:                                                   │
+│  ├── /health              - Health check (shared)              │
+│  ├── /acp/rpc             - ACP JSON-RPC endpoint              │
+│  ├── /acp/events          - ACP SSE notifications              │
+│  ├── /acp/ws              - ACP WebSocket                      │
+│  └── /amplifier/*         - Amplifier routes (namespaced)      │
+│      ├── /amplifier/event - Amplifier SSE                      │
+│      ├── /amplifier/ws    - Amplifier WebSocket                │
+│      └── /amplifier/v1/*  - Amplifier protocol routes          │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This separation ensures that:
+- ACP protocol messages never mix with Amplifier's internal transport
+- Amplifier sessions forward events through ACP's `session/update` notifications
+- HTTP routes don't conflict between the two systems
 
 ## Testing
 
