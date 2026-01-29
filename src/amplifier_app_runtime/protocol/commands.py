@@ -19,6 +19,7 @@ class CommandType(str, Enum):
     # Session lifecycle
     SESSION_CREATE = "session.create"
     SESSION_GET = "session.get"
+    SESSION_INFO = "session.info"
     SESSION_LIST = "session.list"
     SESSION_DELETE = "session.delete"
 
@@ -28,6 +29,34 @@ class CommandType(str, Enum):
 
     # Approval
     APPROVAL_RESPOND = "approval.respond"
+
+    # Configuration
+    CONFIG_INIT = "config.init"
+    CONFIG_GET = "config.get"
+    CONFIG_SET = "config.set"
+    PROVIDER_LIST = "provider.list"
+    PROVIDER_DETECT = "provider.detect"
+
+    # Bundle management
+    BUNDLE_LIST = "bundle.list"
+    BUNDLE_INSTALL = "bundle.install"
+    BUNDLE_ADD = "bundle.add"
+    BUNDLE_REMOVE = "bundle.remove"
+    BUNDLE_INFO = "bundle.info"
+
+    # Agent management
+    AGENTS_LIST = "agents.list"
+    AGENTS_INFO = "agents.info"
+
+    # Tool management
+    TOOLS_LIST = "tools.list"
+    TOOLS_INFO = "tools.info"
+
+    # Slash commands (for TUI/CLI autocomplete)
+    SLASH_COMMANDS_LIST = "slash_commands.list"
+
+    # Session reset
+    SESSION_RESET = "session.reset"
 
     # Server
     PING = "ping"

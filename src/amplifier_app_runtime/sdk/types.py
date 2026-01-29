@@ -6,12 +6,17 @@ from pydantic import BaseModel
 
 
 class SessionInfo(BaseModel):
-    """Session information."""
+    """Session information returned from session.create and session.get."""
 
-    id: str
-    title: str
-    created_at: str
-    updated_at: str
+    session_id: str
+    state: str | None = None
+    bundle: str | None = None
+    # Optional fields for detailed session info
+    title: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    turn_count: int = 0
+    cwd: str | None = None
 
 
 class MessagePart(BaseModel):

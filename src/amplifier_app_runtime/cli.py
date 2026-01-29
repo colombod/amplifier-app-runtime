@@ -30,7 +30,7 @@ import asyncio
 import json
 import sys
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 import httpx
@@ -63,6 +63,40 @@ def truncate(text: str | None, max_len: int = 50) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
+
+
+def _save_env_var(env_file: Any, var_name: str, value: str) -> None:
+    """Save an environment variable to a .env file.
+
+    Appends or updates the variable in the file.
+
+    Args:
+        env_file: Path to the .env file
+        var_name: Name of the environment variable
+        value: Value to save
+    """
+    from pathlib import Path
+
+    env_path = Path(env_file)
+    lines: list[str] = []
+
+    # Read existing content
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+
+    # Update or append the variable
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{var_name}="):
+            lines[i] = f"{var_name}={value}"
+            found = True
+            break
+
+    if not found:
+        lines.append(f"{var_name}={value}")
+
+    # Write back
+    env_path.write_text("\n".join(lines) + "\n")
 
 
 @click.group(invoke_without_command=True)
@@ -174,13 +208,15 @@ def _run_http_server(host: str, port: int, reload: bool, acp_enabled: bool) -> N
 
 
 def _run_stdio_server() -> None:
-    """Run stdio server mode (default)."""
-    from .acp import run_stdio_agent
+    """Run stdio server mode (default).
 
-    click.echo("Starting Amplifier runtime in stdio mode", err=True)
+    Uses native Amplifier protocol over stdin/stdout (JSON lines).
+    For ACP protocol, use --http --acp instead.
+    """
+    from .stdio import run_native_stdio
 
     try:
-        asyncio.run(run_stdio_agent())
+        asyncio.run(run_native_stdio())
     except KeyboardInterrupt:
         click.echo("\nShutting down", err=True)
 
@@ -552,7 +588,7 @@ def provider() -> None:
 def provider_list(output_format: str) -> None:
     """List available providers.
 
-    Shows providers detected from environment variables.
+    Shows all known providers with their installed and configured status.
 
     Examples:
 
@@ -560,36 +596,66 @@ def provider_list(output_format: str) -> None:
     """
     import os
 
-    providers = []
+    from .provider_sources import get_installed_providers
 
-    # Check for common provider API keys
-    # Note: Default models are handled by the provider modules themselves
-    provider_checks = [
-        ("anthropic", "ANTHROPIC_API_KEY"),
-        ("openai", "OPENAI_API_KEY"),
-        ("azure-openai", "AZURE_OPENAI_API_KEY"),
-        ("google", "GOOGLE_API_KEY"),
-    ]
+    providers = get_installed_providers()
 
-    for name, env_var in provider_checks:
-        providers.append(
-            {
-                "name": name,
-                "env_var": env_var,
-                "status": "configured" if os.getenv(env_var) else "not configured",
-            }
-        )
+    # Add configured status based on env vars
+    for p in providers:
+        env_var = p.get("env_var")
+        p["configured"] = bool(os.getenv(env_var)) if env_var else False
 
     if output_format == FORMAT_JSON:
         click.echo(json.dumps(providers, indent=2))
         return
 
-    click.echo(f"{'Provider':<15} {'Status':<15} {'Env Var':<25}")
-    click.echo("-" * 55)
+    click.echo(f"{'Provider':<15} {'Installed':<12} {'Configured':<12} {'Env Var':<25}")
+    click.echo("-" * 65)
     for p in providers:
-        status_color = "green" if p["status"] == "configured" else "red"
-        status_display = click.style(p["status"], fg=status_color)
-        click.echo(f"{p['name']:<15} {status_display:<24} {p['env_var']:<25}")
+        installed = (
+            click.style("yes", fg="green") if p["installed"] else click.style("no", fg="yellow")
+        )
+        configured = (
+            click.style("yes", fg="green") if p["configured"] else click.style("no", fg="red")
+        )
+        env_var = p.get("env_var") or "-"
+        click.echo(f"{p['display_name']:<15} {installed:<21} {configured:<21} {env_var:<25}")
+
+    # Summary
+    installed_count = sum(1 for p in providers if p["installed"])
+    configured_count = sum(1 for p in providers if p["configured"])
+    click.echo(f"\n{installed_count}/{len(providers)} installed, {configured_count} configured")
+
+
+@provider.command("install")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress output")
+def provider_install(quiet: bool) -> None:
+    """Install all known provider modules.
+
+    Downloads and installs all provider modules so they are available
+    for use. This does NOT configure them - you still need to set
+    the appropriate API key environment variables.
+
+    Examples:
+
+        amplifier-runtime provider install
+        amplifier-runtime provider install -q
+    """
+    from .provider_sources import install_known_providers
+
+    if not quiet:
+        click.echo("Installing provider modules...")
+        click.echo("(This downloads provider code - API keys are still needed for configuration)\n")
+
+    installed = install_known_providers(verbose=not quiet, quiet=quiet)
+
+    if not quiet:
+        click.echo(f"\n✓ Installed {len(installed)} provider(s)")
+        click.echo("\nTo configure a provider, set its API key environment variable:")
+        click.echo("  export ANTHROPIC_API_KEY=your-key")
+        click.echo("  export OPENAI_API_KEY=your-key")
+        click.echo("  export AZURE_OPENAI_API_KEY=your-key")
+        click.echo("  export GOOGLE_API_KEY=your-key")
 
 
 @provider.command("check")
@@ -624,6 +690,286 @@ def provider_check(provider_name: str) -> None:
         click.echo(f"{provider_name}: " + click.style("not configured", fg="red"))
         click.echo(f"Set environment variable {env_var} to enable this provider")
         sys.exit(1)
+
+
+# =============================================================================
+# Init Command
+# =============================================================================
+
+
+# Known providers bundled with the runtime
+BUNDLED_PROVIDERS = [
+    {
+        "name": "anthropic",
+        "display_name": "Anthropic",
+        "module": "provider-anthropic",
+        "env_var": "ANTHROPIC_API_KEY",
+    },
+    {
+        "name": "openai",
+        "display_name": "OpenAI",
+        "module": "provider-openai",
+        "env_var": "OPENAI_API_KEY",
+    },
+    {
+        "name": "azure-openai",
+        "display_name": "Azure OpenAI",
+        "module": "provider-azure-openai",
+        "env_var": "AZURE_OPENAI_API_KEY",
+    },
+    {
+        "name": "gemini",
+        "display_name": "Google Gemini",
+        "module": "provider-gemini",
+        "env_var": "GOOGLE_API_KEY",
+    },
+    {
+        "name": "ollama",
+        "display_name": "Ollama",
+        "module": "provider-ollama",
+        "env_var": "OLLAMA_HOST",
+    },
+    {
+        "name": "vllm",
+        "display_name": "vLLM",
+        "module": "provider-vllm",
+        "env_var": "VLLM_API_BASE",
+    },
+]
+
+
+@main.command("init")
+@click.option("--bundle", "-b", default=None, help="Default bundle to use")
+@click.option("--provider", "-p", default=None, help="Default provider (anthropic, openai, etc.)")
+@click.option("--force", "-f", is_flag=True, help="Overwrite existing configuration")
+@click.option("--yes", "-y", is_flag=True, help="Non-interactive mode: use env vars and defaults")
+def init_config(bundle: str | None, provider: str | None, force: bool, yes: bool) -> None:
+    """Interactive first-time setup wizard.
+
+    Providers are bundled with the runtime - no download needed.
+    This wizard helps you configure your API keys and select a default model.
+
+    Examples:
+
+        # Interactive setup (recommended)
+        amplifier-runtime init
+
+        # Non-interactive with auto-detection from env vars
+        amplifier-runtime init --yes
+
+        # Specify provider and bundle directly
+        amplifier-runtime init --provider anthropic --bundle foundation
+    """
+    import os
+    from pathlib import Path
+
+    import yaml
+
+    from .key_manager import KeyManager
+    from .provider_config_utils import configure_provider
+
+    config_dir = Path.home() / ".amplifier-runtime"
+    settings_file = config_dir / "settings.yaml"
+
+    # Check for TTY in interactive mode
+    if not yes and not sys.stdin.isatty():
+        click.echo("Error: Interactive mode requires a TTY.", err=True)
+        click.echo("Use --yes flag for non-interactive setup.")
+        click.echo("\nExample:")
+        click.echo("  amplifier-runtime init --yes")
+        sys.exit(1)
+
+    # Check if already initialized
+    if settings_file.exists() and not force:
+        click.echo(f"Configuration already exists at {settings_file}")
+        click.echo("Use --force to overwrite existing configuration.")
+        if not yes and not click.confirm("Continue anyway?"):
+            return
+
+    # Create config directory
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    # =========================================================================
+    # Welcome
+    # =========================================================================
+    click.echo()
+    click.echo(click.style("=" * 60, fg="cyan"))
+    click.echo(click.style("  Welcome to Amplifier Runtime Setup!", fg="cyan", bold=True))
+    click.echo(click.style("=" * 60, fg="cyan"))
+    click.echo()
+
+    # Initialize key manager (loads existing keys from ~/.amplifier-runtime/keys.env)
+    key_manager = KeyManager()
+
+    # =========================================================================
+    # Step 1: Show available providers and their status
+    # =========================================================================
+    click.echo(click.style("Step 1: Available Providers", bold=True))
+    click.echo(click.style("(Providers are bundled - no download needed)", dim=True))
+    click.echo()
+
+    # Mark which providers are configured (have API keys)
+    providers: list[dict[str, Any]] = []
+    for p in BUNDLED_PROVIDERS:
+        p_copy: dict[str, Any] = dict(p)
+        env_var = p_copy.get("env_var")
+        p_copy["configured"] = bool(env_var and os.getenv(env_var))
+        providers.append(p_copy)
+
+        if p_copy["configured"]:
+            click.echo(
+                f"  ✓ {p_copy['display_name']:<15} "
+                + click.style("configured", fg="green")
+                + f" ({env_var})"
+            )
+        elif not yes:
+            click.echo(
+                f"  - {p_copy['display_name']:<15} "
+                + click.style("not configured", fg="yellow")
+                + f" (set {env_var})"
+            )
+
+    click.echo()
+
+    # =========================================================================
+    # Step 2: Select provider
+    # =========================================================================
+    selected_provider = provider
+    provider_config: dict[str, Any] = {}
+
+    if not selected_provider and providers:
+        if yes:
+            # Non-interactive: use first configured provider
+            configured = [p for p in providers if p["configured"]]
+            if configured:
+                selected_provider = configured[0]["name"]
+            else:
+                click.echo(click.style("Error: No provider API keys found!", fg="red"))
+                click.echo("\nSet one of these environment variables:")
+                for p in providers:
+                    click.echo(f"  export {p['env_var']}=your-api-key")
+                sys.exit(1)
+        else:
+            # Interactive: let user choose from ALL providers
+            click.echo(click.style("Step 2: Select Provider", bold=True))
+            click.echo()
+
+            # Find default (first configured, or first overall)
+            default_idx = 1
+            for idx, p in enumerate(providers, 1):
+                if p["configured"]:
+                    default_idx = idx
+                    break
+
+            for idx, p in enumerate(providers, 1):
+                status = (
+                    click.style("✓", fg="green")
+                    if p["configured"]
+                    else click.style("-", fg="yellow")
+                )
+                click.echo(f"  [{idx}] {status} {p['display_name']}")
+
+            click.echo()
+            click.echo(click.style("  ✓ = API key configured", fg="green", dim=True))
+            click.echo()
+
+            choices = [str(i) for i in range(1, len(providers) + 1)]
+            choice = click.prompt(
+                "Which provider?",
+                default=str(default_idx),
+                type=click.Choice(choices),
+            )
+            selected_p = providers[int(choice) - 1]
+            selected_provider = selected_p["name"]
+
+            # =========================================================================
+            # Step 3: Configure the selected provider (API key + model selection)
+            # =========================================================================
+            click.echo()
+            click.echo(click.style(f"Step 3: Configure {selected_p['display_name']}", bold=True))
+
+            # Use the full configuration flow from provider_config_utils
+            try:
+                provider_config = (
+                    configure_provider(
+                        selected_p["module"],
+                        key_manager,
+                        existing_config=None,
+                        non_interactive=False,
+                    )
+                    or {}
+                )
+            except Exception as e:
+                click.echo(click.style(f"Configuration error: {e}", fg="red"))
+                provider_config = {}
+
+            click.echo()
+
+    # =========================================================================
+    # Step 4: Select default bundle
+    # =========================================================================
+    selected_bundle = bundle
+    if not selected_bundle:
+        if yes:
+            selected_bundle = "foundation"
+        else:
+            click.echo(click.style("Step 4: Select Default Bundle", bold=True))
+            click.echo()
+            click.echo("  [1] foundation (recommended)")
+            click.echo("  [2] amplifier-dev")
+            click.echo()
+            bundle_choice = click.prompt(
+                "Which bundle?",
+                default="1",
+                type=click.Choice(["1", "2"]),
+            )
+            selected_bundle = "foundation" if bundle_choice == "1" else "amplifier-dev"
+            click.echo()
+
+    # =========================================================================
+    # Save configuration
+    # =========================================================================
+    settings: dict[str, Any] = {
+        "version": "1.0",
+        "default_bundle": selected_bundle,
+    }
+
+    if selected_provider:
+        # Build provider config
+        provider_module = f"provider-{selected_provider}"
+        settings["default_provider"] = selected_provider
+        settings["providers"] = [
+            {
+                "module": provider_module,
+                "config": {
+                    "priority": 1,
+                    **provider_config,  # Include model and other config
+                },
+            }
+        ]
+
+    # Write settings file
+    with open(settings_file, "w") as f:
+        yaml.dump(settings, f, default_flow_style=False, sort_keys=False)
+
+    # =========================================================================
+    # Done!
+    # =========================================================================
+    click.echo(click.style("=" * 60, fg="green"))
+    click.echo(click.style("  ✓ Setup Complete!", fg="green", bold=True))
+    click.echo(click.style("=" * 60, fg="green"))
+    click.echo()
+    click.echo(f"  Configuration: {settings_file}")
+    click.echo(f"  Bundle:        {selected_bundle}")
+    if selected_provider:
+        click.echo(f"  Provider:      {selected_provider}")
+        if provider_config.get("default_model"):
+            click.echo(f"  Model:         {provider_config['default_model']}")
+    click.echo()
+    click.echo("To start the runtime:")
+    click.echo("  amplifier-runtime           # Stdio mode (for TUI/IDE)")
+    click.echo("  amplifier-runtime --http    # HTTP server mode")
+    click.echo()
 
 
 # =============================================================================

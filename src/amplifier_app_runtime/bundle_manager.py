@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +28,8 @@ class BundleInfo:
     name: str
     description: str = ""
     uri: str | None = None
+    path: Path | None = None
+    source: str | None = None  # "builtin", "git", "local"
 
 
 class BundleManager:
@@ -62,12 +66,11 @@ class BundleManager:
         except ImportError as e:
             logger.error(f"Failed to import amplifier-foundation: {e}")
             raise RuntimeError(
-                "amplifier-foundation not available. "
-                "Install with: pip install amplifier-foundation"
+                "amplifier-foundation not available. Install with: pip install amplifier-foundation"
             ) from e
 
     @property
-    def registry(self) -> "BundleRegistry":
+    def registry(self) -> BundleRegistry:
         """Get the bundle registry. Must call initialize() first."""
         if not self._registry:
             raise RuntimeError("BundleManager not initialized. Call initialize() first.")
@@ -79,7 +82,7 @@ class BundleManager:
         behaviors: list[str] | None = None,
         provider_config: dict[str, Any] | None = None,
         working_directory: Path | None = None,
-    ) -> "PreparedBundle":
+    ) -> PreparedBundle:
         """Load a bundle, compose behaviors, inject provider config, and prepare.
 
         Args:
@@ -145,60 +148,79 @@ class BundleManager:
 
         return prepared
 
-    async def _auto_detect_provider(self) -> "Bundle | None":
-        """Auto-detect provider from environment variables.
+    async def _auto_detect_provider(self) -> Bundle | None:
+        """Auto-detect ALL providers from environment variables.
 
         Returns:
-            Provider Bundle if API key found, None otherwise.
+            Provider Bundle with all detected providers, None if no API keys found.
         """
         from amplifier_foundation import Bundle
 
-        # Check for Anthropic API key
-        if os.getenv("ANTHROPIC_API_KEY"):
-            try:
-                provider = Bundle(
-                    name="auto-provider-anthropic",
-                    version="1.0.0",
-                    providers=[
-                        {
-                            "module": "provider-anthropic",
-                            "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
-                            "config": {
-                                "debug": True,
-                                "raw_debug": True,
-                            },
-                        }
-                    ],
-                )
-                logger.info("Auto-detected Anthropic provider from environment")
-                return provider
-            except Exception as e:
-                logger.warning(f"Failed to create Anthropic provider: {e}")
+        # Define all supported providers with their env vars and git sources
+        provider_configs = [
+            {
+                "name": "anthropic",
+                "env_var": "ANTHROPIC_API_KEY",
+                "module": "provider-anthropic",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+            },
+            {
+                "name": "openai",
+                "env_var": "OPENAI_API_KEY",
+                "module": "provider-openai",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
+            },
+            {
+                "name": "azure-openai",
+                "env_var": "AZURE_OPENAI_API_KEY",
+                "module": "provider-azure-openai",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main",
+            },
+            {
+                "name": "gemini",
+                "env_var": "GOOGLE_API_KEY",
+                "module": "provider-gemini",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
+            },
+        ]
 
-        # Check for OpenAI API key
-        if os.getenv("OPENAI_API_KEY"):
-            try:
-                provider = Bundle(
-                    name="auto-provider-openai",
-                    version="1.0.0",
-                    providers=[
-                        {
-                            "module": "provider-openai",
-                            "source": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
-                            "config": {
-                                "debug": True,
-                                "raw_debug": True,
-                            },
-                        }
-                    ],
-                )
-                logger.info("Auto-detected OpenAI provider from environment")
-                return provider
-            except Exception as e:
-                logger.warning(f"Failed to create OpenAI provider: {e}")
+        # Collect all providers with API keys set
+        detected_providers: list[dict[str, Any]] = []
 
-        logger.warning("No API key found in environment (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
-        return None
+        for config in provider_configs:
+            if os.getenv(config["env_var"]):
+                detected_providers.append(
+                    {
+                        "module": config["module"],
+                        "source": config["source"],
+                        "config": {
+                            "debug": True,
+                            "raw_debug": True,
+                        },
+                    }
+                )
+                logger.info(f"Auto-detected {config['name']} provider ({config['env_var']} is set)")
+
+        if not detected_providers:
+            logger.warning(
+                "No provider API keys found in environment. "
+                "Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+                "AZURE_OPENAI_API_KEY, GOOGLE_API_KEY"
+            )
+            return None
+
+        # Create bundle with ALL detected providers
+        try:
+            provider_bundle = Bundle(
+                name="auto-providers",
+                version="1.0.0",
+                providers=detected_providers,
+            )
+            logger.info(f"Created provider bundle with {len(detected_providers)} provider(s)")
+            return provider_bundle
+        except Exception as e:
+            logger.warning(f"Failed to create provider bundle: {e}")
+            return None
 
     async def list_bundles(self) -> list[BundleInfo]:
         """List available bundles.
@@ -209,11 +231,269 @@ class BundleManager:
         await self.initialize()
 
         bundles = [
-            BundleInfo(name="foundation", description="Core foundation bundle with tools and agents"),
-            BundleInfo(name="amplifier-dev", description="Bundle for Amplifier ecosystem development"),
+            BundleInfo(
+                name="foundation", description="Core foundation bundle with tools and agents"
+            ),
+            BundleInfo(
+                name="amplifier-dev", description="Bundle for Amplifier ecosystem development"
+            ),
         ]
 
         return bundles
+
+    # =========================================================================
+    # Bundle Installation & Management
+    # =========================================================================
+
+    def _get_bundles_dir(self) -> Path:
+        """Get the bundles directory, creating if needed."""
+        bundles_dir = Path.home() / ".amplifier-runtime" / "bundles"
+        bundles_dir.mkdir(parents=True, exist_ok=True)
+        return bundles_dir
+
+    def _get_registry_file(self) -> Path:
+        """Get the bundle registry file path."""
+        return Path.home() / ".amplifier-runtime" / "bundle-registry.yaml"
+
+    def _load_registry_data(self) -> dict[str, Any]:
+        """Load the bundle registry data."""
+        import yaml
+
+        registry_file = self._get_registry_file()
+        if registry_file.exists():
+            with open(registry_file) as f:
+                return yaml.safe_load(f) or {"bundles": {}}
+        return {"bundles": {}}
+
+    def _save_registry_data(self, data: dict[str, Any]) -> None:
+        """Save the bundle registry data."""
+        import yaml
+
+        registry_file = self._get_registry_file()
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(registry_file, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def name_from_source(self, source: str) -> str:
+        """Extract bundle name from source URL.
+
+        Examples:
+            git+https://github.com/microsoft/amplifier-bundle-recipes -> recipes
+            /home/user/my-bundle -> my-bundle
+        """
+        import re
+
+        # Remove git+ prefix and .git suffix
+        clean = source.replace("git+", "").replace(".git", "")
+
+        # Extract repo name from URL
+        name = clean.rstrip("/").split("/")[-1] if "/" in clean else clean
+
+        # Remove common prefixes
+        name = re.sub(r"^amplifier-bundle-", "", name)
+        name = re.sub(r"^amplifier-", "", name)
+
+        return name or "unknown"
+
+    async def install_bundle(
+        self, source: str, name: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Install a bundle from source.
+
+        Yields progress events during installation.
+
+        Args:
+            source: Git URL or local path
+            name: Optional name (derived from source if not provided)
+
+        Yields:
+            Progress dicts with 'stage' and 'message' keys
+        """
+        import subprocess
+
+        derived_name = name or self.name_from_source(source)
+        bundles_dir = self._get_bundles_dir()
+        target_dir = bundles_dir / derived_name
+
+        # Yield: Starting
+        yield {"stage": "starting", "message": f"Installing bundle: {derived_name}"}
+
+        try:
+            if source.startswith("git+") or source.startswith("https://"):
+                # Git clone
+                git_url = source.replace("git+", "")
+
+                yield {"stage": "cloning", "message": f"Cloning from {git_url}"}
+
+                # Remove existing if present
+                if target_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(target_dir)
+
+                # Clone the repository
+                result = subprocess.run(
+                    ["git", "clone", "--depth", "1", git_url, str(target_dir)],
+                    capture_output=True,
+                    text=True,
+                )
+
+                if result.returncode != 0:
+                    raise RuntimeError(f"Git clone failed: {result.stderr}")
+
+                yield {"stage": "cloned", "message": "Repository cloned successfully"}
+
+            elif Path(source).exists():
+                # Local path - create symlink
+                source_path = Path(source).resolve()
+
+                yield {"stage": "linking", "message": f"Linking local bundle from {source_path}"}
+
+                if target_dir.exists():
+                    target_dir.unlink() if target_dir.is_symlink() else None
+
+                target_dir.symlink_to(source_path)
+
+                yield {"stage": "linked", "message": "Local bundle linked"}
+
+            else:
+                raise ValueError(f"Invalid source: {source}")
+
+            # Validate bundle
+            yield {"stage": "validating", "message": "Validating bundle structure"}
+
+            bundle_file = target_dir / "bundle.md"
+            if not bundle_file.exists():
+                raise ValueError(f"No bundle.md found in {target_dir}")
+
+            yield {"stage": "validated", "message": "Bundle structure valid"}
+
+            # Register in bundle registry
+            yield {"stage": "registering", "message": "Registering bundle"}
+
+            registry_data = self._load_registry_data()
+            registry_data["bundles"][derived_name] = {
+                "source": source,
+                "path": str(target_dir),
+                "installed_at": self._now_iso(),
+            }
+            self._save_registry_data(registry_data)
+
+            yield {
+                "stage": "completed",
+                "message": f"Bundle '{derived_name}' installed successfully",
+            }
+
+        except Exception as e:
+            yield {"stage": "error", "message": str(e)}
+            raise
+
+    def _now_iso(self) -> str:
+        """Get current time in ISO format."""
+        from datetime import datetime
+
+        return datetime.now(UTC).isoformat()
+
+    async def add_local_bundle(self, path: str, name: str) -> BundleInfo:
+        """Register a local bundle path.
+
+        Args:
+            path: Path to local bundle directory
+            name: Name to register the bundle as
+
+        Returns:
+            BundleInfo for the added bundle
+        """
+        source_path = Path(path).resolve()
+
+        if not source_path.exists():
+            raise ValueError(f"Path does not exist: {path}")
+
+        bundle_file = source_path / "bundle.md"
+        if not bundle_file.exists():
+            raise ValueError(f"No bundle.md found in {path}")
+
+        # Register in bundle registry
+        registry_data = self._load_registry_data()
+        registry_data["bundles"][name] = {
+            "source": "local",
+            "path": str(source_path),
+            "added_at": self._now_iso(),
+        }
+        self._save_registry_data(registry_data)
+
+        return BundleInfo(
+            name=name,
+            description=f"Local bundle from {path}",
+            path=source_path,
+            source="local",
+        )
+
+    async def remove_bundle(self, name: str) -> bool:
+        """Remove a bundle registration.
+
+        Args:
+            name: Bundle name to remove
+
+        Returns:
+            True if removed, False if not found
+        """
+        registry_data = self._load_registry_data()
+
+        if name not in registry_data["bundles"]:
+            return False
+
+        bundle_info = registry_data["bundles"][name]
+
+        # Remove from registry
+        del registry_data["bundles"][name]
+        self._save_registry_data(registry_data)
+
+        # Optionally remove files (only for git-installed bundles)
+        if bundle_info.get("source", "").startswith("git"):
+            bundle_path = Path(bundle_info.get("path", ""))
+            if bundle_path.exists() and bundle_path.is_relative_to(self._get_bundles_dir()):
+                import shutil
+
+                shutil.rmtree(bundle_path)
+
+        return True
+
+    async def get_bundle_info(self, name: str) -> BundleInfo:
+        """Get information about a bundle.
+
+        Args:
+            name: Bundle name
+
+        Returns:
+            BundleInfo with details
+
+        Raises:
+            ValueError if bundle not found
+        """
+        # Check builtin bundles first
+        if name in ("foundation", "amplifier-dev"):
+            return BundleInfo(
+                name=name,
+                description=f"Built-in {name} bundle",
+                source="builtin",
+            )
+
+        # Check registry
+        registry_data = self._load_registry_data()
+
+        if name not in registry_data["bundles"]:
+            raise ValueError(f"Bundle not found: {name}")
+
+        bundle_data = registry_data["bundles"][name]
+
+        return BundleInfo(
+            name=name,
+            description=f"Installed bundle: {name}",
+            path=Path(bundle_data["path"]) if bundle_data.get("path") else None,
+            source=bundle_data.get("source"),
+            uri=bundle_data.get("source"),
+        )
 
     async def invalidate_cache(self) -> None:
         """Invalidate bundle/module cache.
@@ -222,10 +502,9 @@ class BundleManager:
         """
         try:
             # Clear the registry's cache
-            if self._registry:
-                if hasattr(self._registry, "clear_cache"):
-                    self._registry.clear_cache()
-                    logger.info("Cleared bundle registry cache")
+            if self._registry and hasattr(self._registry, "clear_cache"):
+                self._registry.clear_cache()
+                logger.info("Cleared bundle registry cache")
 
             # Also clear foundation's module cache if available
             try:
