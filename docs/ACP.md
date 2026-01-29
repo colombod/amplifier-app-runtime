@@ -40,7 +40,7 @@ cd amplifier-app-runtime
 uv pip install -e .
 
 # Run with ACP enabled
-amplifier-runtime serve --acp-enabled
+amplifier-runtime --http --acp
 
 # Test it works
 curl http://localhost:4096/health
@@ -86,16 +86,16 @@ Start the server with ACP endpoints enabled using `--acp-enabled`:
 
 ```bash
 # Default port (4096) with ACP enabled
-amplifier-runtime serve --acp-enabled
+amplifier-runtime --http --acp
 
 # Custom port
-amplifier-runtime serve --acp-enabled --port 8080
+amplifier-runtime --http --acp --port 8080
 
 # Custom host and port (e.g., for external access)
-amplifier-runtime serve --acp-enabled --host 0.0.0.0 --port 8080
+amplifier-runtime --http --acp --host 0.0.0.0 --port 8080
 
 # Development mode with auto-reload
-amplifier-runtime serve --acp-enabled --reload
+amplifier-runtime --http --acp --reload
 ```
 
 > **Note:** The `--acp-enabled` flag is required to expose ACP endpoints. Without it, only the core HTTP API is available.
@@ -444,7 +444,7 @@ Example error response:
 lsof -i :4096
 
 # Try a different port
-amplifier-runtime serve --port 8080
+amplifier-runtime --http --port 8080
 ```
 
 ### Connection refused
@@ -454,7 +454,7 @@ amplifier-runtime serve --port 8080
 curl http://localhost:4096/health
 
 # Check server logs
-amplifier-runtime serve 2>&1 | tee server.log
+amplifier-runtime --http 2>&1 | tee server.log
 ```
 
 ### WebSocket connection fails

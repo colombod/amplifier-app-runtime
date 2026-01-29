@@ -1,95 +1,36 @@
-# Amplifier Server
+# Amplifier Runtime
 
-A server application that exposes [Amplifier](https://github.com/microsoft/amplifier) AI agent capabilities through multiple transports: HTTP REST API, WebSocket, Server-Sent Events (SSE), and the [Agent Client Protocol (ACP)](https://agentclientprotocol.com).
+A runtime server that exposes [Amplifier](https://github.com/microsoft/amplifier) AI agent capabilities through multiple transports: stdio (default), HTTP, WebSocket, Server-Sent Events (SSE), and the [Agent Client Protocol (ACP)](https://agentclientprotocol.com).
 
 ## Features
 
-- **Agent Client Protocol (ACP)** - Standardized protocol for IDE integrations (Zed, JetBrains, VS Code, Neovim)
-- **Multiple Transports** - HTTP, WebSocket, SSE, and stdio for different use cases
+- **Stdio Mode (Default)** - For IDE subprocess integrations (Zed, JetBrains, VS Code, Neovim)
+- **Agent Client Protocol (ACP)** - Standardized protocol for IDE integrations
+- **HTTP Server Mode** - REST API, WebSocket, SSE for remote clients
 - **Session Management** - Create, resume, and manage AI agent sessions
 - **Real-time Streaming** - Stream agent responses as they're generated
-- **Client-side Tools** - IDE can provide terminal, filesystem, and other capabilities to the agent
+
+## Installation
+
+```bash
+# Install with uv (recommended)
+uv tool install git+https://github.com/microsoft/amplifier-app-runtime.git
+
+# Or clone and install locally
+git clone https://github.com/microsoft/amplifier-app-runtime.git
+cd amplifier-app-runtime
+uv pip install -e .
+```
 
 ## Quick Start
 
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/microsoft/amplifier-app-runtime.git
-cd amplifier-app-runtime
-
-# Install with uv (recommended)
-uv pip install -e .
-
-# Or with pip
-pip install -e .
-```
-
-### Run the Server
-
-```bash
-# Start HTTP server with ACP support
-amplifier-runtime serve --acp-enabled
-
-# Server is now running at http://localhost:4096
-```
-
-### Verify It's Working
-
-```bash
-# Health check
-curl http://localhost:4096/health
-# Returns: {"status":"ok"}
-
-# Initialize ACP connection
-curl -X POST http://localhost:4096/acp/rpc \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "initialize",
-    "params": {
-      "protocolVersion": "2025-01-07",
-      "clientInfo": {"name": "test", "version": "1.0"},
-      "clientCapabilities": {}
-    }
-  }'
-```
-
-## Usage Modes
-
-### 1. HTTP Mode (Remote Server)
-
-Best for: Web applications, remote IDE connections, multi-client scenarios.
-
-```bash
-# Start server
-amplifier-runtime serve --acp-enabled
-
-# Or with custom host/port
-amplifier-runtime serve --acp-enabled --host 0.0.0.0 --port 8080
-
-# Development mode with auto-reload
-amplifier-runtime serve --acp-enabled --reload
-```
-
-**Endpoints:**
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/acp/rpc` | POST | ACP JSON-RPC requests |
-| `/acp/events` | GET | ACP SSE notifications |
-| `/acp/ws` | WebSocket | ACP full-duplex communication |
-
-### 2. Stdio Mode (Local Subprocess)
+### Stdio Mode (Default)
 
 Best for: IDE integrations that spawn the agent as a local subprocess.
 
 ```bash
-# Run agent over stdio
-python -m amplifier_app_runtime.acp
+# Run in stdio mode (default)
+amplifier-runtime
 ```
 
 The agent communicates via JSON-RPC over stdin/stdout. All logs go to stderr.
@@ -101,18 +42,78 @@ The agent communicates via JSON-RPC over stdin/stdout. All logs go to stderr.
   "assistant": {
     "provider": "acp",
     "acp": {
-      "command": ["python", "-m", "amplifier_app_runtime.acp"]
+      "command": ["amplifier-runtime"]
     }
   }
 }
 ```
 
-## ACP Protocol Examples
+### HTTP Server Mode
 
-### Complete Session Flow
+Best for: Web applications, remote IDE connections, multi-client scenarios.
 
 ```bash
-# 1. Initialize connection
+# Start HTTP server
+amplifier-runtime --http
+
+# With custom host/port
+amplifier-runtime --http --host 0.0.0.0 --port 8080
+
+# With ACP endpoints enabled
+amplifier-runtime --http --acp
+
+# Development mode with auto-reload
+amplifier-runtime --http --reload
+```
+
+**Endpoints (HTTP mode):**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/acp/rpc` | POST | ACP JSON-RPC requests (when --acp) |
+| `/acp/events` | GET | ACP SSE notifications (when --acp) |
+| `/acp/ws` | WebSocket | ACP full-duplex communication (when --acp) |
+
+### Health Check
+
+```bash
+# Check if HTTP server is running
+amplifier-runtime --health
+
+# Check specific URL
+amplifier-runtime --health --health-url http://localhost:8080
+```
+
+## CLI Reference
+
+```
+amplifier-runtime                     # Stdio mode (default)
+amplifier-runtime --http              # HTTP server mode
+amplifier-runtime --http --port 8080  # HTTP with custom port
+amplifier-runtime --http --acp        # HTTP with ACP endpoints
+amplifier-runtime --health            # Check HTTP server health
+
+amplifier-runtime session list        # List saved sessions
+amplifier-runtime session info <id>   # Show session details
+amplifier-runtime session resume <id> # Resume a session
+amplifier-runtime session delete <id> # Delete a session
+amplifier-runtime session clear --yes # Delete all sessions
+
+amplifier-runtime bundle list         # List available bundles
+amplifier-runtime bundle info <name>  # Show bundle details
+
+amplifier-runtime provider list       # List providers
+amplifier-runtime provider check <n>  # Check provider status
+
+amplifier-runtime config              # Show configuration
+```
+
+## ACP Protocol Examples
+
+### Initialize Connection (HTTP mode with --acp)
+
+```bash
 curl -X POST http://localhost:4096/acp/rpc \
   -H "Content-Type: application/json" \
   -d '{
@@ -125,48 +126,24 @@ curl -X POST http://localhost:4096/acp/rpc \
       "clientCapabilities": {}
     }
   }'
+```
 
-# Response:
-# {
-#   "jsonrpc": "2.0",
-#   "id": "1",
-#   "result": {
-#     "protocolVersion": 1,
-#     "agentInfo": {"name": "amplifier-runtime", "version": "0.1.0"},
-#     "agentCapabilities": {
-#       "loadSession": true,
-#       "mcpCapabilities": {"http": false, "sse": true},
-#       "promptCapabilities": {"audio": false, "embeddedContext": true, "image": false}
-#     }
-#   }
-# }
+### Create Session
 
-# 2. Create a new session
+```bash
 curl -X POST http://localhost:4096/acp/rpc \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
     "id": "2",
     "method": "session/new",
-    "params": {
-      "cwd": "/path/to/your/project"
-    }
+    "params": {"cwd": "/path/to/project"}
   }'
+```
 
-# Response:
-# {
-#   "jsonrpc": "2.0",
-#   "id": "2",
-#   "result": {
-#     "sessionId": "acp_abc123def456",
-#     "modes": {
-#       "availableModes": [{"id": "default", "name": "Default"}],
-#       "currentMode": "default"
-#     }
-#   }
-# }
+### Send Prompt
 
-# 3. Send a prompt
+```bash
 curl -X POST http://localhost:4096/acp/rpc \
   -H "Content-Type: application/json" \
   -d '{
@@ -174,153 +151,38 @@ curl -X POST http://localhost:4096/acp/rpc \
     "id": "3",
     "method": "session/prompt",
     "params": {
-      "sessionId": "acp_abc123def456",
-      "prompt": [{"type": "text", "text": "Hello! Can you help me with my code?"}]
+      "sessionId": "acp_abc123",
+      "prompt": [{"type": "text", "text": "Hello!"}]
     }
   }'
-
-# 4. Cancel a running prompt (notification - no id)
-curl -X POST http://localhost:4096/acp/rpc \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "session/cancel",
-    "params": {"sessionId": "acp_abc123def456"}
-  }'
-```
-
-### WebSocket Client (Python)
-
-```python
-import asyncio
-import json
-import websockets
-
-async def acp_session():
-    async with websockets.connect('ws://localhost:4096/acp/ws') as ws:
-        # Initialize
-        await ws.send(json.dumps({
-            'jsonrpc': '2.0',
-            'id': '1',
-            'method': 'initialize',
-            'params': {
-                'protocolVersion': '2025-01-07',
-                'clientInfo': {'name': 'my-client', 'version': '1.0'},
-                'clientCapabilities': {}
-            }
-        }))
-        init_response = json.loads(await ws.recv())
-        print('Initialized:', init_response)
-        
-        # Create session
-        await ws.send(json.dumps({
-            'jsonrpc': '2.0',
-            'id': '2',
-            'method': 'session/new',
-            'params': {'cwd': '/tmp'}
-        }))
-        session_response = json.loads(await ws.recv())
-        session_id = session_response['result']['sessionId']
-        print('Session created:', session_id)
-        
-        # Send prompt
-        await ws.send(json.dumps({
-            'jsonrpc': '2.0',
-            'id': '3',
-            'method': 'session/prompt',
-            'params': {
-                'sessionId': session_id,
-                'prompt': [{'type': 'text', 'text': 'Hello!'}]
-            }
-        }))
-        
-        # Receive streaming updates
-        while True:
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=60)
-                data = json.loads(msg)
-                print('Received:', data)
-                
-                # Check for final response
-                if 'result' in data and data.get('id') == '3':
-                    break
-            except asyncio.TimeoutError:
-                break
-
-asyncio.run(acp_session())
-```
-
-### Client with Terminal & Filesystem Capabilities
-
-When clients advertise capabilities, the agent can use IDE-provided tools:
-
-```python
-from acp import Client, connect_to_agent
-from acp.schema import (
-    ClientCapabilities,
-    FileSystemCapability,
-    CreateTerminalResponse,
-    ReadTextFileResponse,
-)
-
-class MyIDEClient(Client):
-    """Client that provides terminal and filesystem to the agent."""
-    
-    async def create_terminal(self, session_id, command, args, **kwargs):
-        """Agent wants to run a command in the IDE's terminal."""
-        terminal_id = "term_1"
-        # Create terminal in your IDE...
-        return CreateTerminalResponse(terminal_id=terminal_id)
-    
-    async def read_text_file(self, session_id, path, **kwargs):
-        """Agent wants to read a file through the IDE."""
-        content = open(path).read()
-        return ReadTextFileResponse(content=content)
-    
-    async def write_text_file(self, session_id, path, content, **kwargs):
-        """Agent wants to write a file through the IDE."""
-        with open(path, 'w') as f:
-            f.write(content)
-    
-    async def session_update(self, session_id, update, **kwargs):
-        """Receive streaming updates from the agent."""
-        print(f"Update: {update}")
-
-# Connect with capabilities
-capabilities = ClientCapabilities(
-    terminal=True,
-    fs=FileSystemCapability(read_text_file=True, write_text_file=True)
-)
-
-# The agent will now have access to ide_terminal, ide_read_file, ide_write_file tools
 ```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Client Applications                         │
-│  (Zed, VS Code, JetBrains, Neovim, Web Apps, CLI tools)         │
-└───────────────────────────────┬─────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Client Applications                             │
+│  (Zed, VS Code, JetBrains, Neovim, Web Apps, CLI tools)             │
+└───────────────────────────────┬─────────────────────────────────────┘
                                 │
                     ACP Protocol (JSON-RPC 2.0)
                                 │
-┌───────────────────────────────┴─────────────────────────────────┐
-│                      Amplifier Server                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Transports                                                      │
-│  ├── HTTP + SSE (remote clients)                                │
-│  ├── WebSocket (full-duplex)                                    │
-│  └── stdio (subprocess/IPC)                                     │
-├─────────────────────────────────────────────────────────────────┤
-│  ACP Agent                                                       │
-│  ├── Protocol handling (initialize, session/*, etc.)            │
-│  ├── Client capability negotiation                              │
-│  └── Session update streaming                                   │
-├─────────────────────────────────────────────────────────────────┤
-│  Session Manager                                                 │
-│  └── Amplifier sessions (LLM, tools, context)                   │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────┴─────────────────────────────────────┐
+│                      Amplifier Runtime                               │
+├─────────────────────────────────────────────────────────────────────┤
+│  Transports                                                          │
+│  ├── stdio (default - subprocess/IPC)                               │
+│  ├── HTTP + SSE (--http flag)                                       │
+│  └── WebSocket (--http flag)                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│  ACP Agent                                                           │
+│  ├── Protocol handling (initialize, session/*, etc.)                │
+│  ├── Client capability negotiation                                  │
+│  └── Session update streaming                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  Session Manager                                                     │
+│  └── Amplifier sessions (LLM, tools, context)                       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Client-Side Tools (ACP Capabilities)
@@ -333,8 +195,6 @@ When clients advertise capabilities, the agent gains access to IDE-provided tool
 | `fs.read_text_file: true` | `ide_read_file` | Read files through IDE |
 | `fs.write_text_file: true` | `ide_write_file` | Write files through IDE |
 
-This enables the agent to interact with the IDE environment directly.
-
 ## Development
 
 ```bash
@@ -343,10 +203,6 @@ uv pip install -e ".[dev]"
 
 # Run tests
 uv run pytest
-
-# Run ACP end-to-end tests
-uv run python tests/acp/test_e2e_acp.py
-uv run python tests/acp/test_e2e_acp_tools.py
 
 # Type checking
 uv run pyright src/
@@ -376,7 +232,6 @@ src/amplifier_app_runtime/
 ## Documentation
 
 - [ACP Protocol Details](docs/ACP.md) - Complete ACP implementation documentation
-- [ACP Feature Analysis](docs/ACP_FEATURE_ANALYSIS.md) - Feature comparison and analysis
 - [Agent Client Protocol](https://agentclientprotocol.com) - Official ACP specification
 
 ## License

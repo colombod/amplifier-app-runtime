@@ -1,14 +1,27 @@
-"""Amplifier Server CLI.
+"""Amplifier Runtime CLI.
 
-Commands:
-    amplifier-runtime serve              - Run headless HTTP server
-    amplifier-runtime stdio              - Run in stdio mode (for subprocess/IPC)
-    amplifier-runtime health             - Check server health
-    amplifier-runtime run "prompt"       - One-shot execution
-    amplifier-runtime session list       - List saved sessions
-    amplifier-runtime session info <id>  - Show session details
-    amplifier-runtime session resume <id> - Resume and continue a session
-    amplifier-runtime session delete <id> - Delete a session
+Default mode is stdio (for IDE/subprocess integration).
+Use --http to run as HTTP server.
+
+Usage:
+    amplifier-runtime                     # Stdio mode (default)
+    amplifier-runtime --http              # HTTP server mode
+    amplifier-runtime --http --port 8080  # HTTP with custom port
+    amplifier-runtime --http --acp        # HTTP with ACP endpoints
+    amplifier-runtime --health            # Check HTTP server health
+
+    amplifier-runtime session list        # List saved sessions
+    amplifier-runtime session info <id>   # Show session details
+    amplifier-runtime session resume <id> # Resume a session
+    amplifier-runtime session delete <id> # Delete a session
+
+    amplifier-runtime bundle list         # List available bundles
+    amplifier-runtime bundle info <name>  # Show bundle details
+
+    amplifier-runtime provider list       # List providers
+    amplifier-runtime provider check <n>  # Check provider status
+
+    amplifier-runtime config              # Show configuration
 """
 
 from __future__ import annotations
@@ -23,7 +36,7 @@ import click
 import httpx
 
 if TYPE_CHECKING:
-    from .session import ManagedSession
+    pass
 
 # Output format options
 FORMAT_TABLE = "table"
@@ -53,108 +66,46 @@ def truncate(text: str | None, max_len: int = 50) -> str:
 
 
 @click.group(invoke_without_command=True)
+@click.option("--http", "http_mode", is_flag=True, help="Run as HTTP server instead of stdio")
+@click.option("--host", default="127.0.0.1", help="Host to bind to (HTTP mode)")
+@click.option("--port", default=4096, help="Port to bind to (HTTP mode)")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development (HTTP mode)")
+@click.option("--acp", "acp_enabled", is_flag=True, help="Enable ACP endpoints (HTTP mode)")
+@click.option("--health", "health_check", is_flag=True, help="Check HTTP server health and exit")
+@click.option("--health-url", default="http://localhost:4096", help="Server URL for health check")
 @click.pass_context
-def main(ctx: click.Context) -> None:
-    """Amplifier Server - HTTP API for AI agent sessions."""
-    if ctx.invoked_subcommand is None:
-        click.echo(ctx.get_help())
+def main(
+    ctx: click.Context,
+    http_mode: bool,
+    host: str,
+    port: int,
+    reload: bool,
+    acp_enabled: bool,
+    health_check: bool,
+    health_url: str,
+) -> None:
+    """Amplifier Runtime - AI agent server for IDE integrations.
 
-
-# =============================================================================
-# Server Commands
-# =============================================================================
-
-
-@main.command()
-@click.option("--host", default="127.0.0.1", help="Host to bind to")
-@click.option("--port", default=4096, help="Port to bind to")
-@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
-@click.option("--acp-enabled", is_flag=True, help="Enable Agent Client Protocol (ACP) endpoints")
-def serve(host: str, port: int, reload: bool, acp_enabled: bool) -> None:
-    """Run the Amplifier server (HTTP mode).
-
-    By default, only the core HTTP API is enabled. Use --acp-enabled to also
-    expose ACP protocol endpoints for editor integrations (Zed, JetBrains, etc).
+    By default, runs in stdio mode for subprocess/IPC communication.
+    Use --http to run as an HTTP server.
     """
-    import os
+    # If a subcommand is invoked, let it handle everything
+    if ctx.invoked_subcommand is not None:
+        return
 
-    import uvicorn
+    # Handle --health flag
+    if health_check:
+        _do_health_check(health_url)
+        return
 
-    # Pass ACP flag via environment variable for the app factory
-    if acp_enabled:
-        os.environ["AMPLIFIER_ACP_ENABLED"] = "1"
-        click.echo(f"Starting Amplifier server on http://{host}:{port} (ACP enabled)", err=True)
-        click.echo("  ACP endpoints: /acp/rpc, /acp/events, /acp/ws", err=True)
+    # Run in appropriate mode
+    if http_mode:
+        _run_http_server(host, port, reload, acp_enabled)
     else:
-        os.environ.pop("AMPLIFIER_ACP_ENABLED", None)
-        click.echo(f"Starting Amplifier server on http://{host}:{port}", err=True)
-
-    click.echo("Press Ctrl+C to stop", err=True)
-
-    uvicorn.run(
-        "amplifier_app_runtime.app:create_app",
-        factory=True,
-        host=host,
-        port=port,
-        reload=reload,
-    )
+        _run_stdio_server()
 
 
-@main.command()
-def stdio() -> None:
-    """Run in stdio mode for subprocess/IPC communication.
-
-    Reads JSON commands from stdin (one per line).
-    Writes JSON events to stdout (one per line).
-    """
-    from .transport.stdio import Event, StdioTransport
-
-    click.echo("Starting Amplifier server in stdio mode", err=True)
-    click.echo("Reading from stdin, writing to stdout", err=True)
-
-    async def handle_event(event: Event) -> Event | None:
-        """Handle incoming events and return responses."""
-        if event.type == "ping":
-            return Event(type="pong", properties={})
-
-        if event.type == "health":
-            return Event(
-                type="health_response",
-                properties={"status": "ok", "mode": "stdio"},
-            )
-
-        if event.type == "prompt":
-            # TODO: Integrate with actual session execution
-            return Event(
-                type="response",
-                properties={
-                    "message": "stdio mode active - session integration pending",
-                    "received": event.properties,
-                },
-            )
-
-        # Echo unknown events back with error
-        return Event(
-            type="error",
-            properties={
-                "error": "unknown_event_type",
-                "received_type": event.type,
-            },
-        )
-
-    async def run() -> None:
-        transport = StdioTransport()
-        await transport.run_loop(handle_event)
-
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        click.echo("\nShutting down", err=True)
-
-
-@main.command()
-@click.option("--url", default="http://localhost:4096", help="Server URL")
-def health(url: str) -> None:
+def _do_health_check(url: str) -> None:
     """Check server health."""
 
     async def check() -> None:
@@ -174,104 +125,42 @@ def health(url: str) -> None:
     asyncio.run(check())
 
 
-# =============================================================================
-# Run Command (One-shot execution)
-# =============================================================================
+def _run_http_server(host: str, port: int, reload: bool, acp_enabled: bool) -> None:
+    """Run HTTP server mode."""
+    import os
+
+    import uvicorn
+
+    # Pass ACP flag via environment variable for the app factory
+    if acp_enabled:
+        os.environ["AMPLIFIER_ACP_ENABLED"] = "1"
+        click.echo(f"Starting Amplifier runtime on http://{host}:{port} (ACP enabled)", err=True)
+        click.echo("  ACP endpoints: /acp/rpc, /acp/events, /acp/ws", err=True)
+    else:
+        os.environ.pop("AMPLIFIER_ACP_ENABLED", None)
+        click.echo(f"Starting Amplifier runtime on http://{host}:{port}", err=True)
+
+    click.echo("Press Ctrl+C to stop", err=True)
+
+    uvicorn.run(
+        "amplifier_app_runtime.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        reload=reload,
+    )
 
 
-@main.command("run")
-@click.argument("prompt")
-@click.option("--bundle", "-b", default=None, help="Bundle to use")
-@click.option("--session", "-s", default=None, help="Session ID to continue")
-@click.option("--max-turns", default=1, help="Maximum turns (default: 1 for one-shot)")
-@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
-@click.option("--quiet", "-q", is_flag=True, help="Only output the response")
-def run_prompt(
-    prompt: str,
-    bundle: str | None,
-    session: str | None,
-    max_turns: int,
-    output_json: bool,
-    quiet: bool,
-) -> None:
-    """Execute a prompt and exit.
+def _run_stdio_server() -> None:
+    """Run stdio server mode (default)."""
+    from .acp import run_stdio_agent
 
-    Examples:
+    click.echo("Starting Amplifier runtime in stdio mode", err=True)
 
-        # Simple one-shot
-        amplifier-runtime run "What is 2+2?"
-
-        # With specific bundle
-        amplifier-runtime run "Analyze this code" --bundle foundation
-
-        # Continue existing session
-        amplifier-runtime run "And what about 3+3?" --session sess_abc123
-
-        # JSON output for scripting
-        amplifier-runtime run "List files" --json
-    """
-    from .session import SessionConfig, SessionManager
-
-    async def execute() -> None:
-        manager = SessionManager()
-
-        # Resume existing or create new session
-        managed_session: ManagedSession | None = None
-        if session:
-            managed_session = await manager.resume(session)
-            if not managed_session:
-                click.echo(f"Session not found: {session}", err=True)
-                sys.exit(1)
-            if not quiet:
-                click.echo(f"Resuming session {session}", err=True)
-        else:
-            config = SessionConfig(bundle=bundle, max_turns=max_turns)
-            managed_session = await manager.create(config=config)
-            await managed_session.initialize()
-            if not quiet:
-                click.echo(f"Created session {managed_session.session_id}", err=True)
-
-        # Collect response
-        response_text = ""
-        events_collected: list[dict] = []
-
-        try:
-            async for event in managed_session.execute(prompt):
-                if output_json:
-                    events_collected.append({"type": event.type, "properties": event.properties})
-
-                # Collect text from content blocks
-                if event.type == "content_block:delta":
-                    delta = event.properties.get("delta", {})
-                    if "text" in delta:
-                        text = delta["text"]
-                        response_text += text
-                        if not quiet and not output_json:
-                            click.echo(text, nl=False)
-
-            if not quiet and not output_json:
-                click.echo()  # Final newline
-
-            if output_json:
-                result = {
-                    "session_id": managed_session.session_id,
-                    "turn": managed_session.metadata.turn_count,
-                    "response": response_text,
-                    "events": events_collected,
-                }
-                click.echo(json.dumps(result, indent=2, ensure_ascii=False))
-
-        except Exception as e:
-            if output_json:
-                click.echo(
-                    json.dumps({"error": str(e), "type": type(e).__name__}),
-                    err=True,
-                )
-            else:
-                click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-
-    asyncio.run(execute())
+    try:
+        asyncio.run(run_stdio_agent())
+    except KeyboardInterrupt:
+        click.echo("\nShutting down", err=True)
 
 
 # =============================================================================
@@ -421,18 +310,17 @@ def session_info(session_id: str, output_format: str, transcript: bool) -> None:
 
 @session.command("resume")
 @click.argument("session_id")
-@click.argument("prompt", required=False)
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
-def session_resume(session_id: str, prompt: str | None, output_json: bool) -> None:
-    """Resume a session and optionally send a prompt.
+def session_resume(session_id: str, output_json: bool) -> None:
+    """Resume a session and show its state.
 
     Examples:
 
-        # Show session state (no prompt)
+        # Show session state
         amplifier-runtime session resume sess_abc123
 
-        # Continue conversation
-        amplifier-runtime session resume sess_abc123 "What else can you tell me?"
+        # JSON output
+        amplifier-runtime session resume sess_abc123 --json
     """
     from .session import SessionManager
 
@@ -451,39 +339,8 @@ def session_resume(session_id: str, prompt: str | None, output_json: bool) -> No
             err=True,
         )
 
-        if not prompt:
-            # Just show info, don't execute
-            if output_json:
-                click.echo(json.dumps(managed_session.to_dict(), indent=2, default=str))
-            return
-
-        # Execute prompt
-        response_text = ""
-        events_collected: list[dict] = []
-
-        async for event in managed_session.execute(prompt):
-            if output_json:
-                events_collected.append({"type": event.type, "properties": event.properties})
-
-            if event.type == "content_block:delta":
-                delta = event.properties.get("delta", {})
-                if "text" in delta:
-                    text = delta["text"]
-                    response_text += text
-                    if not output_json:
-                        click.echo(text, nl=False)
-
-        if not output_json:
-            click.echo()
-
         if output_json:
-            result = {
-                "session_id": managed_session.session_id,
-                "turn": managed_session.metadata.turn_count,
-                "response": response_text,
-                "events": events_collected,
-            }
-            click.echo(json.dumps(result, indent=2, ensure_ascii=False))
+            click.echo(json.dumps(managed_session.to_dict(), indent=2, default=str))
 
     asyncio.run(execute())
 
@@ -748,7 +605,7 @@ def provider_check(provider_name: str) -> None:
 
 
 # =============================================================================
-# Config Commands
+# Config Command
 # =============================================================================
 
 
@@ -790,7 +647,7 @@ def show_config(output_json: bool) -> None:
         click.echo(json.dumps(config, indent=2))
         return
 
-    click.echo("Amplifier Server Configuration")
+    click.echo("Amplifier Runtime Configuration")
     click.echo("-" * 40)
     click.echo(f"Data directory:     {config['data_dir']}")
     click.echo(f"Default bundle:     {config['default_bundle']}")
