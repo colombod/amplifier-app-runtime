@@ -379,12 +379,18 @@ class StdioClientTransport(BaseClientTransport):
             if not line_str:
                 continue
 
+            # Skip non-JSON lines (e.g., log messages that leaked to stdout)
+            if not line_str.startswith("{"):
+                logger.debug(f"Skipping non-JSON line: {line_str[:50]}")
+                continue
+
             try:
                 data = json.loads(line_str)
                 yield Event.model_validate(data)
             except (json.JSONDecodeError, ValueError) as e:
-                logger.warning(f"Failed to parse event: {e}")
-                yield Event.error(None, f"Parse error: {e}", code="parse_error")
+                # Log but don't yield error events for parse failures
+                # These often happen during shutdown when process is terminating
+                logger.debug(f"Failed to parse event: {e} (line: {line_str[:50]})")
 
     async def _read_stderr(self) -> None:
         """Read and log stderr output."""
