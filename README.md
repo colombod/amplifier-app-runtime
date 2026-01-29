@@ -61,7 +61,73 @@ amplifier-server serve --host 0.0.0.0 --port 8080
 
 # Development mode with auto-reload
 amplifier-server serve --reload
+
+# Enable Agent Client Protocol (ACP) endpoints
+amplifier-server serve --acp-enabled
 ```
+
+### Agent Client Protocol (ACP)
+
+ACP is a standardized protocol for communication between code editors and AI coding agents.
+Enable it with `--acp-enabled` to expose ACP endpoints for editor integrations (Zed, JetBrains, etc).
+
+```bash
+# Start with ACP enabled
+amplifier-server serve --acp-enabled
+
+# ACP endpoints will be available at:
+# - POST /acp/rpc    - JSON-RPC endpoint for requests
+# - GET  /acp/events - SSE endpoint for streaming notifications
+# - WS   /acp/ws     - WebSocket for full-duplex communication
+```
+
+**ACP Protocol Flow:**
+
+```bash
+# 1. Initialize connection
+curl -X POST http://localhost:4096/acp/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": 1,
+      "clientInfo": {"name": "my-editor", "version": "1.0.0"}
+    }
+  }'
+
+# 2. Create a session
+curl -X POST http://localhost:4096/acp/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "session/new",
+    "params": {
+      "cwd": "/path/to/project",
+      "mcpServers": []
+    }
+  }'
+
+# 3. Submit a prompt
+curl -X POST http://localhost:4096/acp/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/prompt",
+    "params": {
+      "sessionId": "<session-id>",
+      "prompt": [{"type": "text", "text": "Hello!"}]
+    }
+  }'
+
+# 4. Stream updates via SSE (in another terminal)
+curl -N http://localhost:4096/acp/events
+```
+
+See: https://agentclientprotocol.com for protocol documentation.
 
 ### stdio Mode
 

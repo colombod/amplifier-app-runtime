@@ -11,10 +11,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.requests import Request  # type: ignore[import-untyped]
+from starlette.responses import (  # type: ignore[import-untyped]
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
+from starlette.routing import Route, WebSocketRoute  # type: ignore[import-untyped]
+from starlette.websockets import WebSocket, WebSocketDisconnect  # type: ignore[import-untyped]
 
 from .handler import AcpHandler
 from .transport import HttpAcpTransport, WebSocketAcpTransport

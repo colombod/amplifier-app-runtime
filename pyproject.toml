@@ -25,6 +25,7 @@ dependencies = [
     "rich>=13.0.0",
     "amplifier-core",
     "amplifier-foundation",
+    "agent-client-protocol>=0.7.1",
 ]
 
 [project.optional-dependencies]

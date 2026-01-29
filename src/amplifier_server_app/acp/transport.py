@@ -15,16 +15,57 @@ import logging
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Coroutine
-from typing import Any
+from typing import Any, Literal
 
-from .types import (
-    JsonRpcError,
-    JsonRpcErrorCode,
-    JsonRpcNotification,
-    JsonRpcResponse,
-)
+from pydantic import BaseModel  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# JSON-RPC 2.0 Types (not part of ACP SDK, defined locally)
+# =============================================================================
+
+
+class JsonRpcError(BaseModel):
+    """JSON-RPC 2.0 error object."""
+
+    code: int
+    message: str
+    data: Any | None = None
+
+
+class JsonRpcResponse(BaseModel):
+    """JSON-RPC 2.0 response."""
+
+    jsonrpc: Literal["2.0"] = "2.0"
+    id: str | int | None
+    result: Any | None = None
+    error: JsonRpcError | None = None
+
+
+class JsonRpcNotification(BaseModel):
+    """JSON-RPC 2.0 notification (no response expected)."""
+
+    jsonrpc: Literal["2.0"] = "2.0"
+    method: str
+    params: dict[str, Any] | None = None
+
+
+class JsonRpcErrorCode:
+    """Standard JSON-RPC 2.0 error codes."""
+
+    PARSE_ERROR = -32700
+    INVALID_REQUEST = -32600
+    METHOD_NOT_FOUND = -32601
+    INVALID_PARAMS = -32602
+    INTERNAL_ERROR = -32603
+
+    # ACP-specific error codes
+    AUTH_REQUIRED = -32000
+    SESSION_NOT_FOUND = -32001
+    PERMISSION_DENIED = -32002
+
 
 # Type aliases
 RequestHandler = Callable[[str, dict[str, Any] | None], Coroutine[Any, Any, Any]]

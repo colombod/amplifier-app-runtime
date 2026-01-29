@@ -69,11 +69,26 @@ def main(ctx: click.Context) -> None:
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 @click.option("--port", default=4096, help="Port to bind to")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for development")
-def serve(host: str, port: int, reload: bool) -> None:
-    """Run the Amplifier server (HTTP mode)."""
+@click.option("--acp-enabled", is_flag=True, help="Enable Agent Client Protocol (ACP) endpoints")
+def serve(host: str, port: int, reload: bool, acp_enabled: bool) -> None:
+    """Run the Amplifier server (HTTP mode).
+
+    By default, only the core HTTP API is enabled. Use --acp-enabled to also
+    expose ACP protocol endpoints for editor integrations (Zed, JetBrains, etc).
+    """
+    import os
+
     import uvicorn
 
-    click.echo(f"Starting Amplifier server on http://{host}:{port}", err=True)
+    # Pass ACP flag via environment variable for the app factory
+    if acp_enabled:
+        os.environ["AMPLIFIER_ACP_ENABLED"] = "1"
+        click.echo(f"Starting Amplifier server on http://{host}:{port} (ACP enabled)", err=True)
+        click.echo("  ACP endpoints: /acp/rpc, /acp/events, /acp/ws", err=True)
+    else:
+        os.environ.pop("AMPLIFIER_ACP_ENABLED", None)
+        click.echo(f"Starting Amplifier server on http://{host}:{port}", err=True)
+
     click.echo("Press Ctrl+C to stop", err=True)
 
     uvicorn.run(

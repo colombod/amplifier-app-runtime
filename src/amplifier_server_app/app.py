@@ -7,14 +7,16 @@ Route organization:
 - /event - SSE event streaming (legacy)
 - /session/* - Session management (legacy, will be deprecated)
 - /v1/* - Protocol-based routes (recommended)
+- /acp/* - Agent Client Protocol routes (optional, via --acp-enabled)
 """
+
+import os
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount, Route
 
-from .acp import acp_routes
 from .routes import (
     event_routes,
     health_routes,
@@ -34,12 +36,20 @@ def create_app(*, use_protocol_routes: bool = True) -> Starlette:
     Returns:
         Configured Starlette application
     """
+    # Check if ACP is enabled via environment variable
+    acp_enabled = os.environ.get("AMPLIFIER_ACP_ENABLED", "").lower() in ("1", "true", "yes")
+
     # Combine all routes
     routes: list[Route | Mount] = []
     routes.extend(health_routes)
     routes.extend(event_routes)
     routes.extend(websocket_routes)  # WebSocket full-duplex transport
-    routes.extend(acp_routes)  # Agent Client Protocol (ACP) routes
+
+    # Conditionally add ACP routes
+    if acp_enabled:
+        from .acp import acp_routes
+
+        routes.extend(acp_routes)  # Agent Client Protocol (ACP) routes
 
     if use_protocol_routes:
         # Mount protocol routes at /v1/ prefix
