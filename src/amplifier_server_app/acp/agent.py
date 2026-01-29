@@ -147,12 +147,13 @@ class AmplifierAgent(Agent):
         bundle = kwargs.get("field_meta", {}).get("bundle") if kwargs.get("field_meta") else None
         bundle = bundle or DEFAULT_BUNDLE
 
-        # Create session wrapper
+        # Create session wrapper with client capabilities for ACP tools
         session = AmplifierAgentSession(
             session_id=session_id,
             cwd=cwd,
             bundle=bundle,
             conn=self._conn,
+            client_capabilities=self._client_capabilities,
         )
 
         # Initialize the underlying Amplifier session
@@ -200,15 +201,19 @@ class AmplifierAgent(Agent):
             logger.warning(f"Session not found: {session_id}")
             return None
 
-        # Wrap in our session type
+        # Wrap in our session type with client capabilities
         session = AmplifierAgentSession(
             session_id=session_id,
             cwd=cwd,
             bundle=DEFAULT_BUNDLE,
             conn=self._conn,
+            client_capabilities=self._client_capabilities,
         )
         session._amplifier_session = amplifier_session
         self._sessions[session_id] = session
+
+        # Register ACP tools for loaded session
+        await session._register_acp_tools()
 
         logger.info(f"Loaded ACP session: {session_id}")
 
@@ -397,6 +402,9 @@ class AmplifierAgentSession:
 
     This class bridges Amplifier's event system to ACP's session/update notifications.
     Events flow: Amplifier -> Hook -> _on_event() -> conn.session_update()
+
+    ACP client-side tools (ide_terminal, ide_read_file, ide_write_file) are registered
+    based on client capabilities during initialization.
     """
 
     def __init__(
@@ -405,14 +413,17 @@ class AmplifierAgentSession:
         cwd: str,
         bundle: str,
         conn: Client | None,
+        client_capabilities: Any | None = None,
     ) -> None:
         self.session_id = session_id
         self.cwd = cwd
         self.bundle = bundle
         self.current_mode = "default"
         self._conn = conn
+        self._client_capabilities = client_capabilities
         self._amplifier_session: ManagedSession | None = None
         self._cancel_event = asyncio.Event()
+        self._registered_acp_tools: list[str] = []
 
     async def initialize(self) -> None:
         """Initialize the underlying Amplifier session."""
@@ -453,6 +464,47 @@ class AmplifierAgentSession:
         # Initialize with prepared bundle
         await self._amplifier_session.initialize(prepared_bundle=prepared_bundle)
         logger.info(f"Amplifier session {self.session_id} initialized")
+
+        # Register ACP client-side tools based on capabilities
+        await self._register_acp_tools()
+
+    async def _register_acp_tools(self) -> None:
+        """Register ACP client-side tools on this session.
+
+        Tools are registered based on client capabilities:
+        - ide_terminal: requires client_capabilities.terminal
+        - ide_read_file: requires client_capabilities.fs.readTextFile
+        - ide_write_file: requires client_capabilities.fs.writeTextFile
+        """
+        if not self._amplifier_session:
+            logger.warning("Cannot register ACP tools - session not initialized")
+            return
+
+        from .tools import register_acp_tools
+
+        # Create closure for lazy client access
+        def get_client() -> Client | None:
+            return self._conn
+
+        try:
+            self._registered_acp_tools = await register_acp_tools(
+                session=self._amplifier_session,
+                get_client=get_client,
+                session_id=self.session_id,
+                client_capabilities=self._client_capabilities,
+            )
+            if self._registered_acp_tools:
+                logger.info(
+                    f"Registered ACP tools for session {self.session_id}: "
+                    f"{self._registered_acp_tools}"
+                )
+            else:
+                logger.debug(
+                    f"No ACP tools registered for session {self.session_id} "
+                    "(client may not support capabilities)"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to register ACP tools: {e}")
 
     async def execute_prompt(self, content: str) -> str:
         """Execute prompt and stream updates back via ACP.
