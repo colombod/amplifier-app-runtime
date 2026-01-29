@@ -119,6 +119,11 @@ Args:
             "required": ["command"],
         }
 
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """JSON Schema for tool parameters (Amplifier protocol)."""
+        return self.parameters
+
     async def execute(self, input: dict[str, Any]) -> ToolResult:
         """Execute a command in the IDE's terminal."""
         client = self._get_client()
@@ -293,6 +298,11 @@ Args:
             "required": ["path"],
         }
 
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """JSON Schema for tool parameters (Amplifier protocol)."""
+        return self.parameters
+
     async def execute(self, input: dict[str, Any]) -> ToolResult:
         """Read a file from the IDE's file system."""
         client = self._get_client()
@@ -380,6 +390,11 @@ Args:
             },
             "required": ["path", "content"],
         }
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """JSON Schema for tool parameters (Amplifier protocol)."""
+        return self.parameters
 
     async def execute(self, input: dict[str, Any]) -> ToolResult:
         """Write a file to the IDE's file system."""
@@ -483,12 +498,18 @@ async def register_acp_tools(
     registered = []
 
     # Get coordinator from session
-    # Handle both direct session and ManagedSession wrapper
+    # Handle both direct AmplifierSession and ManagedSession wrapper
+    coordinator = None
     if hasattr(session, "coordinator"):
+        # Direct AmplifierSession
         coordinator = session.coordinator
-    elif hasattr(session, "session") and hasattr(session.session, "coordinator"):
-        coordinator = session.session.coordinator
-    else:
+    elif hasattr(session, "_amplifier_session"):
+        # ManagedSession wrapper - access underlying session
+        amplifier_session = session._amplifier_session
+        if amplifier_session and hasattr(amplifier_session, "coordinator"):
+            coordinator = amplifier_session.coordinator
+
+    if coordinator is None:
         logger.warning("Could not find coordinator on session - ACP tools not registered")
         return registered
 
