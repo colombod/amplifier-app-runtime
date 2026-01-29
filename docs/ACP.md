@@ -2,22 +2,50 @@
 
 Amplifier Server implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) for standardized communication with code editors and AI coding tools.
 
+## Table of Contents
+
+- [Official Documentation](#official-documentation)
+- [Quick Start](#quick-start)
+- [Running Modes](#running-modes)
+- [Protocol Usage](#acp-protocol-usage)
+- [Client-Side Tools](#client-side-tools)
+- [IDE Configuration](#editor-configuration)
+- [Troubleshooting](#troubleshooting)
+
 ## Official Documentation
 
 - **Website:** [agentclientprotocol.com](https://agentclientprotocol.com)
 - **Introduction:** [Get Started](https://agentclientprotocol.com/get-started/introduction)
 - **Protocol Specification:** [Specification](https://agentclientprotocol.com/specification)
 - **GitHub:** [anthropics/acp](https://github.com/anthropics/acp)
+- **Python SDK:** [agentclientprotocol/python-sdk](https://github.com/agentclientprotocol/python-sdk)
 
 ## Overview
 
-ACP enables integration with:
+ACP is a standardized protocol for communication between code editors and AI coding agents. It enables:
+
 - **Zed** - Native ACP support
 - **JetBrains AI Assistant** - ACP-compliant
 - **Neovim plugins** - Via ACP adapters
 - **VS Code extensions** - Custom ACP clients
 
 **Protocol Version:** `2025-01-07`
+
+## Quick Start
+
+```bash
+# Install
+git clone https://github.com/colombod/amplifier-server-app.git
+cd amplifier-server-app
+uv pip install -e .
+
+# Run with ACP enabled
+amplifier-server serve --acp-enabled
+
+# Test it works
+curl http://localhost:4096/health
+# {"status":"ok"}
+```
 
 ## Implementation
 
@@ -28,9 +56,13 @@ This implementation uses the [official ACP Python SDK](https://github.com/agentc
 - `run_agent()` - SDK's stdio transport handler
 
 **Key modules:**
-- `amplifier_server_app.acp.agent` - Core agent implementation
-- `amplifier_server_app.acp.routes` - HTTP/SSE/WebSocket endpoints
-- `amplifier_server_app.acp.transport` - Transport utilities
+
+| Module | Description |
+|--------|-------------|
+| `amplifier_server_app.acp.agent` | Core ACP agent implementation |
+| `amplifier_server_app.acp.routes` | HTTP/SSE/WebSocket endpoints |
+| `amplifier_server_app.acp.tools` | Client-side tools (terminal, filesystem) |
+| `amplifier_server_app.acp.__main__` | Stdio entry point with protocol isolation |
 
 ## Installation
 
@@ -437,22 +469,179 @@ For editors that spawn agents as local subprocesses, use stdio mode:
 
 ```bash
 # Run agent over stdio (for editor subprocess integration)
-python -m amplifier_server_app.acp.agent
+python -m amplifier_server_app.acp
 ```
 
 The agent communicates via JSON-RPC over stdin/stdout, with logs to stderr.
 
-## Testing
+### CRITICAL: Stdio Protocol Isolation
 
-Run the end-to-end ACP test:
+When using stdio transport, **stdout is exclusively reserved for JSON-RPC messages**. The entry point (`python -m amplifier_server_app.acp`) implements several layers of protection:
 
-```bash
-# From repository root
-uv run python tests/acp/test_e2e_acp.py
+1. **JSON-RPC Stdout Filter**: Only valid JSON objects starting with `{` are allowed through to stdout. Any non-JSON content (log messages, print statements, etc.) is automatically redirected to stderr with a `[stdout-filtered]` prefix.
+
+2. **Logging Configuration**: All Python logging is configured to use stderr before any other modules are imported.
+
+3. **Route Namespacing**: When ACP is enabled via `--acp-enabled`, Amplifier's internal HTTP/WS/SSE routes are namespaced under `/amplifier/` to prevent conflicts with ACP routes.
+
+This ensures the ACP protocol is never corrupted by stray output.
+
+### Architecture: ACP vs Amplifier Transports
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     ACP ENABLED MODE                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  STDIO (stdin/stdout)                                          │
+│  └── Exclusively owned by ACP JSON-RPC protocol                │
+│      └── JsonRpcStdoutFilter ensures only valid JSON passes    │
+│                                                                 │
+│  STDERR                                                        │
+│  └── All logging, diagnostics, filtered content                │
+│                                                                 │
+│  HTTP Routes:                                                   │
+│  ├── /health              - Health check (shared)              │
+│  ├── /acp/rpc             - ACP JSON-RPC endpoint              │
+│  ├── /acp/events          - ACP SSE notifications              │
+│  ├── /acp/ws              - ACP WebSocket                      │
+│  └── /amplifier/*         - Amplifier routes (namespaced)      │
+│      ├── /amplifier/event - Amplifier SSE                      │
+│      ├── /amplifier/ws    - Amplifier WebSocket                │
+│      └── /amplifier/v1/*  - Amplifier protocol routes          │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-This test:
-1. Spawns the agent as a subprocess (stdio transport)
-2. Uses the official ACP SDK client
-3. Runs full protocol flow: initialize → session/new → prompt → response
-4. Verifies streaming updates are received correctly
+This separation ensures that:
+- ACP protocol messages never mix with Amplifier's internal transport
+- Amplifier sessions forward events through ACP's `session/update` notifications
+- HTTP routes don't conflict between the two systems
+
+## Client-Side Tools
+
+When clients advertise capabilities during initialization, the agent gains access to IDE-provided tools. This enables the agent to interact with the IDE environment directly.
+
+### Available Capabilities
+
+| Client Capability | Agent Tool | Description |
+|-------------------|------------|-------------|
+| `terminal: true` | `ide_terminal` | Run commands in IDE terminal |
+| `fs.read_text_file: true` | `ide_read_file` | Read files through IDE |
+| `fs.write_text_file: true` | `ide_write_file` | Write files through IDE |
+
+### Advertising Capabilities
+
+```bash
+curl -X POST http://localhost:4096/acp/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-01-07",
+      "clientInfo": {"name": "my-ide", "version": "1.0"},
+      "clientCapabilities": {
+        "terminal": true,
+        "fs": {
+          "read_text_file": true,
+          "write_text_file": true
+        }
+      }
+    }
+  }'
+```
+
+### Implementing Client Methods
+
+When the agent uses these tools, it calls back to the client. Clients must implement:
+
+**Terminal Methods:**
+- `terminal/create` - Create a terminal and run command
+- `terminal/output` - Get terminal output
+- `terminal/wait_for_exit` - Wait for command completion
+- `terminal/release` - Release terminal resources
+
+**Filesystem Methods:**
+- `fs/read_text_file` - Read file content
+- `fs/write_text_file` - Write file content
+
+### Python Client Example
+
+```python
+from acp import Client, connect_to_agent
+from acp.schema import (
+    ClientCapabilities,
+    FileSystemCapability,
+    CreateTerminalResponse,
+    ReadTextFileResponse,
+    TerminalOutputResponse,
+    WaitForTerminalExitResponse,
+)
+
+class MyIDEClient(Client):
+    """Client that provides terminal and filesystem to the agent."""
+    
+    # Terminal capability
+    async def create_terminal(self, session_id, command, args, cwd=None, **kwargs):
+        """Create terminal and run command."""
+        terminal_id = f"term_{uuid.uuid4().hex[:8]}"
+        # Run command in your IDE's terminal...
+        return CreateTerminalResponse(terminal_id=terminal_id)
+    
+    async def terminal_output(self, session_id, terminal_id, **kwargs):
+        """Get output from terminal."""
+        output = "command output here"
+        return TerminalOutputResponse(output=output)
+    
+    async def wait_for_terminal_exit(self, session_id, terminal_id, **kwargs):
+        """Wait for terminal to complete."""
+        return WaitForTerminalExitResponse(exit_code=0)
+    
+    async def release_terminal(self, session_id, terminal_id, **kwargs):
+        """Release terminal resources."""
+        pass
+    
+    # Filesystem capability
+    async def read_text_file(self, session_id, path, line=None, limit=None, **kwargs):
+        """Read file content."""
+        with open(path) as f:
+            content = f.read()
+        return ReadTextFileResponse(content=content)
+    
+    async def write_text_file(self, session_id, path, content, **kwargs):
+        """Write file content."""
+        with open(path, 'w') as f:
+            f.write(content)
+    
+    # Required: receive streaming updates
+    async def session_update(self, session_id, update, **kwargs):
+        """Receive streaming updates from the agent."""
+        print(f"Update: {type(update).__name__}")
+
+# Connect with capabilities
+client = MyIDEClient()
+capabilities = ClientCapabilities(
+    terminal=True,
+    fs=FileSystemCapability(read_text_file=True, write_text_file=True)
+)
+```
+
+## Testing
+
+Run the end-to-end ACP tests:
+
+```bash
+# Basic ACP protocol test (initialize, session, prompt)
+uv run python tests/acp/test_e2e_acp.py
+
+# Client-side tools test (terminal, read_file, write_file)
+uv run python tests/acp/test_e2e_acp_tools.py
+```
+
+These tests:
+1. Spawn the agent as a subprocess (stdio transport)
+2. Use the official ACP SDK client
+3. Run full protocol flow: initialize → session/new → prompt → response
+4. Verify streaming updates and tool callbacks work correctly

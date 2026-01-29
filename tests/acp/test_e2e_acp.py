@@ -15,7 +15,6 @@ import asyncio.subprocess as aio_subprocess
 import logging
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -137,19 +136,15 @@ async def run_e2e_test() -> dict[str, Any]:
         "error": None,
     }
 
-    # Path to our agent module
-    agent_module = Path(__file__).parent.parent.parent / "src" / "amplifier_server_app" / "acp" / "agent.py"
+    # Use the proper module entry point for stdio isolation
+    # This ensures the JsonRpcStdoutFilter is active
+    logger.info("Starting agent subprocess: python -m amplifier_server_app.acp")
 
-    if not agent_module.exists():
-        results["error"] = f"Agent module not found: {agent_module}"
-        return results
-
-    logger.info(f"Starting agent subprocess: {agent_module}")
-
-    # Spawn agent as subprocess
+    # Spawn agent as subprocess using module entry point
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(agent_module),
+        "-m",
+        "amplifier_server_app.acp",
         stdin=aio_subprocess.PIPE,
         stdout=aio_subprocess.PIPE,
         stderr=aio_subprocess.PIPE,
@@ -242,7 +237,7 @@ async def run_e2e_test() -> dict[str, Any]:
             and results["updates_received"] > 0
         )
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         results["error"] = "Test timed out"
     except Exception as e:
         results["error"] = f"Unexpected error: {e}"
@@ -253,7 +248,7 @@ async def run_e2e_test() -> dict[str, Any]:
             proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
 
         # Capture stderr for debugging
