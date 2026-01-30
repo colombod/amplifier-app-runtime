@@ -31,7 +31,7 @@ class ServerSpawnManager:
         instruction: str,
         parent_session: Any,
         agent_configs: dict[str, dict],
-        prepared_bundle: "PreparedBundle",
+        prepared_bundle: PreparedBundle,
         parent_tool_call_id: str | None = None,
         sub_session_id: str | None = None,
         tool_inheritance: dict[str, list[str]] | None = None,
@@ -69,6 +69,9 @@ class ServerSpawnManager:
 
         logger.info(f"Spawning agent '{agent_name}' with session {sub_session_id}")
 
+        # Get parent hooks for event forwarding (outside try for access in except)
+        parent_hooks = parent_session.coordinator.hooks
+
         try:
             # Get agent config
             agent_config = agent_configs.get(agent_name)
@@ -79,17 +82,33 @@ class ServerSpawnManager:
                     "session_id": sub_session_id,
                 }
 
+            # Emit session:fork event BEFORE creating child session
+            if parent_hooks:
+                logger.info(
+                    f"Emitting session:fork: child={sub_session_id}, "
+                    f"tool_call_id={parent_tool_call_id}, agent={agent_name}"
+                )
+                await parent_hooks.emit(
+                    "session:fork",
+                    {
+                        "parent_id": parent_session.session_id,
+                        "child_id": sub_session_id,
+                        "parent_tool_call_id": parent_tool_call_id,
+                        "agent": agent_name,
+                    },
+                )
+
             # Create event forwarder to parent hooks
             def create_event_forwarder():
                 """Create a hook that forwards events to parent session."""
-                parent_hooks = parent_session.coordinator.hooks
 
                 async def forward_event(event_type: str, data: dict) -> dict:
-                    # Annotate with spawn context
+                    # Annotate with spawn context for TUI display
                     data = dict(data)
-                    data["_spawned_from"] = parent_session.session_id
-                    data["_spawn_session_id"] = sub_session_id
-                    data["_agent_name"] = agent_name
+                    data["child_session_id"] = sub_session_id
+                    data["parent_tool_call_id"] = parent_tool_call_id
+                    data["agent_name"] = agent_name
+                    data["nesting_depth"] = data.get("nesting_depth", 0) + 1
 
                     # Forward to parent hooks
                     if parent_hooks:
@@ -135,6 +154,19 @@ class ServerSpawnManager:
             # Clean up
             self._active_spawns.pop(sub_session_id, None)
 
+            # Emit session:join event when spawn completes
+            if parent_hooks:
+                await parent_hooks.emit(
+                    "session:join",
+                    {
+                        "parent_id": parent_session.session_id,
+                        "child_id": sub_session_id,
+                        "parent_tool_call_id": parent_tool_call_id,
+                        "agent": agent_name,
+                        "status": "success",
+                    },
+                )
+
             return {
                 "status": "success",
                 "result": result,
@@ -144,6 +176,21 @@ class ServerSpawnManager:
         except Exception as e:
             logger.error(f"Spawn failed for agent '{agent_name}': {e}")
             self._active_spawns.pop(sub_session_id, None)
+
+            # Emit session:join event with error status
+            if parent_hooks:
+                await parent_hooks.emit(
+                    "session:join",
+                    {
+                        "parent_id": parent_session.session_id,
+                        "child_id": sub_session_id,
+                        "parent_tool_call_id": parent_tool_call_id,
+                        "agent": agent_name,
+                        "status": "error",
+                        "error": str(e),
+                    },
+                )
+
             return {
                 "status": "error",
                 "error": str(e),
@@ -178,7 +225,7 @@ class ServerSpawnManager:
 
 def register_spawn_capability(
     session: Any,
-    prepared_bundle: "PreparedBundle",
+    prepared_bundle: PreparedBundle,
     spawn_manager: ServerSpawnManager | None = None,
 ) -> ServerSpawnManager:
     """Register session spawning capability on a session.

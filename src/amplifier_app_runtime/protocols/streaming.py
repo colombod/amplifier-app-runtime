@@ -146,6 +146,7 @@ DEFAULT_EVENTS_TO_CAPTURE = [
     "session:start",
     "session:end",
     "session:fork",
+    "session:join",  # When sub-session completes
     "session:resume",
     # Prompt lifecycle
     "prompt:submit",
