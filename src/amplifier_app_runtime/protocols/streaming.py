@@ -174,6 +174,8 @@ DEFAULT_EVENTS_TO_CAPTURE = [
     # Artifacts
     "artifact:write",
     "artifact:read",
+    # Todos (from amplifier-core todo tool)
+    "todo:update",
     # Approval
     "approval:required",
     "approval:granted",
