@@ -123,20 +123,76 @@ class CommandHandler:
     # =========================================================================
 
     async def _session_create(self, command: Command) -> AsyncIterator[Event]:
-        """Handle session.create command."""
+        """Handle session.create command.
+
+        Supports two modes:
+        1. Named bundle: {"bundle": "foundation"}
+        2. Runtime bundle: {"bundle_definition": {"name": "...", "tools": [...]}}
+        """
         from ..session import SessionConfig
+
+        prepared_bundle = None
+        bundle_definition = command.get_param("bundle_definition")
+
+        # Handle runtime bundle definition
+        if bundle_definition:
+            try:
+                from amplifier_foundation import Bundle, load_bundle
+
+                from ..bundle_manager import BundleManager
+
+                # Start with a base bundle (foundation provides orchestrator, tools, etc.)
+                base_bundle_name = bundle_definition.get("base", "foundation")
+                bundle = await load_bundle(base_bundle_name)
+
+                # Create overlay bundle with runtime customizations
+                overlay = Bundle(
+                    name=bundle_definition.get("name", "runtime-bundle"),
+                    version=bundle_definition.get("version", "1.0.0"),
+                    description=bundle_definition.get("description", ""),
+                    providers=bundle_definition.get("providers", []),
+                    tools=bundle_definition.get("tools", []),
+                    hooks=bundle_definition.get("hooks", []),
+                    agents=bundle_definition.get("agents", {}),
+                    instruction=bundle_definition.get("instructions")
+                    or bundle_definition.get("instruction"),
+                    session=bundle_definition.get("session", {}),
+                )
+
+                # Compose: base + overlay (overlay wins on conflicts)
+                bundle = bundle.compose(overlay)
+
+                # Auto-detect provider if not specified
+                if not bundle_definition.get("providers"):
+                    manager = BundleManager()
+                    await manager.initialize()
+                    provider_bundle = await manager._auto_detect_provider()
+                    if provider_bundle:
+                        bundle = bundle.compose(provider_bundle)
+
+                # Prepare the bundle
+                prepared_bundle = await bundle.prepare()
+
+            except Exception as e:
+                yield Event.error(
+                    command.id,
+                    error=f"Failed to create runtime bundle: {e}",
+                    code="BUNDLE_ERROR",
+                )
+                return
 
         # Extract config from params
         config = SessionConfig(
-            bundle=command.get_param("bundle"),
+            bundle=command.get_param("bundle") if not prepared_bundle else None,
             provider=command.get_param("provider"),
             model=command.get_param("model"),
             working_directory=command.get_param("working_directory"),
+            behaviors=command.get_param("behaviors") or [],
         )
 
         # Create and initialize session
         session = await self._sessions.create(config=config)
-        await session.initialize()
+        await session.initialize(prepared_bundle=prepared_bundle)
 
         # Return session info
         yield Event.result(

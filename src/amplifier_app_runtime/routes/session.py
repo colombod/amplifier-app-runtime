@@ -21,13 +21,28 @@ from ..session import SessionConfig, session_manager
 
 
 class CreateSessionRequest(BaseModel):
-    """Request to create a new session."""
+    """Request to create a new session.
+
+    Supports two ways to specify a bundle:
+    - bundle: str - Reference a pre-existing bundle by name (e.g., "foundation")
+    - bundle_definition: dict - Define a bundle at runtime with full configuration
+
+    Example bundle_definition:
+        {
+            "name": "my-agent",
+            "providers": [{"module": "provider-anthropic"}],
+            "tools": [{"module": "tool-filesystem"}],
+            "instructions": "You are a helpful assistant."
+        }
+    """
 
     title: str | None = None
     bundle: str | None = None
+    bundle_definition: dict[str, Any] | None = None  # Runtime bundle definition
     provider: str | None = None
     model: str | None = None
     working_directory: str | None = None
+    behaviors: list[str] | None = None
 
 
 class UpdateSessionRequest(BaseModel):
@@ -64,21 +79,70 @@ async def list_sessions(request: Request) -> JSONResponse:
 
 
 async def create_session(request: Request) -> JSONResponse:
-    """Create a new session."""
+    """Create a new session.
+
+    Supports two modes:
+    1. Named bundle: {"bundle": "foundation"}
+    2. Runtime bundle: {"bundle_definition": {"name": "...", "tools": [...]}}
+    """
     body = await request.json() if await request.body() else {}
     req = CreateSessionRequest(**body)
 
+    prepared_bundle = None
+
+    # Handle runtime bundle definition
+    if req.bundle_definition:
+        try:
+            from amplifier_foundation import Bundle
+
+            # Create Bundle from definition
+            defn = req.bundle_definition
+            bundle = Bundle(
+                name=defn.get("name", "runtime-bundle"),
+                version=defn.get("version", "1.0.0"),
+                description=defn.get("description", ""),
+                providers=defn.get("providers", []),
+                tools=defn.get("tools", []),
+                hooks=defn.get("hooks", []),
+                agents=defn.get("agents", {}),
+                instruction=defn.get("instructions") or defn.get("instruction"),
+                session=defn.get("session", {}),
+                includes=defn.get("includes", []),
+            )
+
+            # Auto-detect and inject provider if not specified
+            from ..bundle_manager import BundleManager
+
+            manager = BundleManager()
+            await manager.initialize()
+
+            # Check if providers were specified in definition
+            if not req.bundle_definition.get("providers"):
+                provider_bundle = await manager._auto_detect_provider()
+                if provider_bundle:
+                    bundle = bundle.compose(provider_bundle)
+
+            # Prepare the bundle
+            prepared_bundle = await bundle.prepare()
+
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to create runtime bundle: {e}", "code": "BUNDLE_ERROR"},
+                status_code=400,
+            )
+
     config = SessionConfig(
-        bundle=req.bundle,
+        bundle=req.bundle if not prepared_bundle else None,
         provider=req.provider,
         model=req.model,
         working_directory=req.working_directory,
+        behaviors=req.behaviors or [],
     )
 
     session = await session_manager.create(config=config)
 
     # Initialize the session (loads bundle, prepares amplifier-core)
-    await session.initialize()
+    await session.initialize(prepared_bundle=prepared_bundle)
 
     return JSONResponse(session.to_dict(), status_code=201)
 
