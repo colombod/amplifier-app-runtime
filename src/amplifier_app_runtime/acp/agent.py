@@ -599,7 +599,14 @@ class AmplifierAgentSession:
         try:
             result = await self._slash_handler.execute(parsed)
 
-            # Send result as agent message
+            # If command returns a prompt to execute through Amplifier
+            # This is the correct pattern for commands that need tool invocation
+            # with full context and orchestration (e.g., recipes)
+            if result.execute_as_prompt:
+                logger.info(f"Slash command /{parsed.name} translating to Amplifier prompt")
+                return await self._execute_amplifier_prompt(result.execute_as_prompt)
+
+            # Send result as agent message (for direct responses)
             if result.send_as_message and self._conn:
                 await self._conn.session_update(
                     self.session_id,
@@ -614,6 +621,44 @@ class AmplifierAgentSession:
 
         except Exception as e:
             logger.exception(f"Error executing slash command: {e}")
+            if self._conn:
+                await self._conn.session_update(
+                    self.session_id,
+                    update_agent_message(text_block(f"Error: {e}")),
+                )
+            return "error"
+
+    async def _execute_amplifier_prompt(self, prompt: str) -> str:
+        """Execute a prompt through Amplifier's normal flow.
+
+        This is used when slash commands need full orchestration,
+        such as recipe execution which requires proper context,
+        tool invocation, and event streaming.
+
+        Args:
+            prompt: The prompt to execute through Amplifier
+
+        Returns:
+            Stop reason from execution
+        """
+        if not self._amplifier_session:
+            logger.error("Session not initialized for prompt execution")
+            return "error"
+
+        try:
+            # Execute through Amplifier's normal flow
+            # This ensures proper orchestration, context, and tool invocation
+            async for event in self._amplifier_session.execute(prompt):
+                if self._cancel_event.is_set():
+                    return "cancelled"
+                await self._on_event(event)
+
+            return "end_turn"
+
+        except asyncio.CancelledError:
+            return "cancelled"
+        except Exception as e:
+            logger.exception(f"Error executing Amplifier prompt: {e}")
             if self._conn:
                 await self._conn.session_update(
                     self.session_id,

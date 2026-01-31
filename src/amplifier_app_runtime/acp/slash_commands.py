@@ -43,15 +43,28 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SlashCommandResult:
-    """Result of executing a slash command."""
+    """Result of executing a slash command.
+
+    Slash commands can either:
+    1. Return a direct message (send_as_message=True, execute_as_prompt=None)
+    2. Translate to an Amplifier prompt for full orchestration (execute_as_prompt set)
+
+    When execute_as_prompt is set, the ACP agent should execute that prompt
+    through Amplifier's normal flow, ensuring proper context, capabilities,
+    and tool orchestration. This is the correct pattern for commands that
+    need to invoke Amplifier tools like recipes.
+    """
 
     success: bool
     message: str
     data: dict[str, Any] = field(default_factory=dict)
-    # If true, also send as agent message to client
+    # If true, send message to client (for direct responses)
     send_as_message: bool = True
     # If set, send updated commands list after this command
     update_commands: bool = False
+    # If set, execute this prompt through Amplifier instead of direct response
+    # This ensures proper orchestration, context, and tool invocation
+    execute_as_prompt: str | None = None
 
 
 @dataclass
@@ -619,55 +632,83 @@ class SlashCommandHandler:
             )
 
     async def _recipe_list(self) -> SlashCommandResult:
-        """List active recipe sessions."""
-        # TODO: Implement via recipes tool
+        """List active recipe sessions.
+
+        Translates to Amplifier prompt for proper orchestration.
+        """
         return SlashCommandResult(
             success=True,
-            message=(
-                "Recipe listing not yet implemented. "
-                'Use the `recipes` tool with `operation="list"`.'
+            message="Listing active recipe sessions...",
+            send_as_message=False,  # Don't send this, let Amplifier respond
+            execute_as_prompt=(
+                "Use the recipes tool to list active recipe sessions. "
+                "Show the session IDs, recipe names, and current status."
             ),
-            data={"sessions": []},
         )
 
     async def _recipe_run(self, path: str) -> SlashCommandResult:
-        """Execute a recipe."""
+        """Execute a recipe.
+
+        Translates to Amplifier prompt for proper orchestration.
+        The recipes tool will be invoked with full context and capabilities.
+        """
         if not path:
             return SlashCommandResult(
                 success=False,
                 message="Please specify a recipe path: `/recipe run <path>`",
             )
 
-        # TODO: Implement via recipes tool
+        # Parse optional context variables: /recipe run path.yaml key=value key2=value2
+        parts = path.split()
+        recipe_path = parts[0]
+        context_vars = {}
+
+        if len(parts) > 1:
+            for part in parts[1:]:
+                if "=" in part:
+                    key, value = part.split("=", 1)
+                    context_vars[key] = value
+
+        # Build prompt for Amplifier
+        prompt = f'Execute the recipe at "{recipe_path}" using the recipes tool.'
+        if context_vars:
+            context_str = ", ".join(f'{k}="{v}"' for k, v in context_vars.items())
+            prompt += f" Pass these context variables: {context_str}."
+
         return SlashCommandResult(
             success=True,
-            message=(
-                f"Recipe execution not yet implemented. Use the `recipes` tool "
-                f'with `operation="execute"` and `recipe_path="{path}"`.'
-            ),
-            data={"recipe_path": path},
+            message=f"Starting recipe: {recipe_path}",
+            send_as_message=False,
+            execute_as_prompt=prompt,
+            data={"recipe_path": recipe_path, "context": context_vars},
         )
 
     async def _recipe_resume(self, session_id: str) -> SlashCommandResult:
-        """Resume an interrupted recipe."""
+        """Resume an interrupted recipe.
+
+        Translates to Amplifier prompt for proper orchestration.
+        """
         if not session_id:
             return SlashCommandResult(
                 success=False,
                 message="Please specify a session ID: `/recipe resume <id>`",
             )
 
-        # TODO: Implement via recipes tool
         return SlashCommandResult(
             success=True,
-            message=(
-                f"Recipe resume not yet implemented. Use the `recipes` tool "
-                f'with `operation="resume"` and `session_id="{session_id}"`.'
+            message=f"Resuming recipe session: {session_id}",
+            send_as_message=False,
+            execute_as_prompt=(
+                f'Resume the recipe session with ID "{session_id}" using the recipes tool.'
             ),
             data={"session_id": session_id},
         )
 
     async def _recipe_approve(self, args: str) -> SlashCommandResult:
-        """Approve a pending recipe stage."""
+        """Approve a pending recipe stage.
+
+        Translates to Amplifier prompt for proper orchestration.
+        """
         parts = args.split()
         if len(parts) < 2:
             return SlashCommandResult(
@@ -677,30 +718,34 @@ class SlashCommandHandler:
 
         session_id, stage = parts[0], parts[1]
 
-        # TODO: Implement via recipes tool
         return SlashCommandResult(
             success=True,
-            message=(
-                "Recipe approval not yet implemented. "
-                'Use the `recipes` tool with `operation="approve"`.'
+            message=f"Approving stage '{stage}' for session {session_id}",
+            send_as_message=False,
+            execute_as_prompt=(
+                f'Approve the stage "{stage}" for recipe session "{session_id}" '
+                "using the recipes tool."
             ),
             data={"session_id": session_id, "stage": stage},
         )
 
     async def _recipe_cancel(self, session_id: str) -> SlashCommandResult:
-        """Cancel a running recipe."""
+        """Cancel a running recipe.
+
+        Translates to Amplifier prompt for proper orchestration.
+        """
         if not session_id:
             return SlashCommandResult(
                 success=False,
                 message="Please specify a session ID: `/recipe cancel <id>`",
             )
 
-        # TODO: Implement via recipes tool
         return SlashCommandResult(
             success=True,
-            message=(
-                "Recipe cancellation not yet implemented. "
-                'Use the `recipes` tool with `operation="cancel"`.'
+            message=f"Cancelling recipe session: {session_id}",
+            send_as_message=False,
+            execute_as_prompt=(
+                f'Cancel the recipe session with ID "{session_id}" using the recipes tool.'
             ),
             data={"session_id": session_id},
         )

@@ -370,3 +370,121 @@ class TestSlashCommandResult:
         )
 
         assert result.update_commands is True
+
+    def test_execute_as_prompt_default(self) -> None:
+        """execute_as_prompt defaults to None."""
+        result = SlashCommandResult(success=True, message="Test")
+        assert result.execute_as_prompt is None
+
+    def test_execute_as_prompt_set(self) -> None:
+        """execute_as_prompt can be set for Amplifier orchestration."""
+        result = SlashCommandResult(
+            success=True,
+            message="Starting recipe",
+            send_as_message=False,
+            execute_as_prompt="Execute the recipe at test.yaml",
+        )
+
+        assert result.execute_as_prompt == "Execute the recipe at test.yaml"
+        assert result.send_as_message is False
+
+
+# =============================================================================
+# Recipe Command Tests
+# =============================================================================
+
+
+class TestRecipeCommands:
+    """Tests for recipe slash command orchestration pattern."""
+
+    @pytest.fixture
+    def handler(self) -> SlashCommandHandler:
+        """Create handler without session (for testing parse logic)."""
+        return SlashCommandHandler(session=None)
+
+    @pytest.mark.asyncio
+    async def test_recipe_run_returns_prompt(self, handler: SlashCommandHandler) -> None:
+        """Recipe run translates to Amplifier prompt."""
+        command = ParsedCommand(
+            name="recipe", args="run @recipes:test.yaml", raw="/recipe run @recipes:test.yaml"
+        )
+        result = await handler.execute(command)
+
+        assert result.success is True
+        assert result.execute_as_prompt is not None
+        assert "@recipes:test.yaml" in result.execute_as_prompt
+        assert "recipes tool" in result.execute_as_prompt.lower()
+        assert result.send_as_message is False
+
+    @pytest.mark.asyncio
+    async def test_recipe_run_with_context_vars(self, handler: SlashCommandHandler) -> None:
+        """Recipe run parses context variables."""
+        command = ParsedCommand(
+            name="recipe",
+            args="run test.yaml file=src/main.py level=high",
+            raw="/recipe run test.yaml file=src/main.py level=high",
+        )
+        result = await handler.execute(command)
+
+        assert result.success is True
+        assert result.execute_as_prompt is not None
+        assert "file" in result.execute_as_prompt
+        assert "level" in result.execute_as_prompt
+        assert result.data.get("context") == {"file": "src/main.py", "level": "high"}
+
+    @pytest.mark.asyncio
+    async def test_recipe_run_no_path(self, handler: SlashCommandHandler) -> None:
+        """Recipe run without path returns error."""
+        command = ParsedCommand(name="recipe", args="run", raw="/recipe run")
+        result = await handler.execute(command)
+
+        assert result.success is False
+        assert "specify a recipe path" in result.message.lower()
+        assert result.execute_as_prompt is None
+
+    @pytest.mark.asyncio
+    async def test_recipe_list_returns_prompt(self, handler: SlashCommandHandler) -> None:
+        """Recipe list translates to Amplifier prompt."""
+        command = ParsedCommand(name="recipe", args="list", raw="/recipe list")
+        result = await handler.execute(command)
+
+        assert result.success is True
+        assert result.execute_as_prompt is not None
+        assert "list" in result.execute_as_prompt.lower()
+        assert "recipes tool" in result.execute_as_prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_recipe_resume_returns_prompt(self, handler: SlashCommandHandler) -> None:
+        """Recipe resume translates to Amplifier prompt."""
+        command = ParsedCommand(name="recipe", args="resume abc123", raw="/recipe resume abc123")
+        result = await handler.execute(command)
+
+        assert result.success is True
+        assert result.execute_as_prompt is not None
+        assert "abc123" in result.execute_as_prompt
+        assert "resume" in result.execute_as_prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_recipe_approve_returns_prompt(self, handler: SlashCommandHandler) -> None:
+        """Recipe approve translates to Amplifier prompt."""
+        command = ParsedCommand(
+            name="recipe", args="approve sess123 planning", raw="/recipe approve sess123 planning"
+        )
+        result = await handler.execute(command)
+
+        assert result.success is True
+        assert result.execute_as_prompt is not None
+        assert "sess123" in result.execute_as_prompt
+        assert "planning" in result.execute_as_prompt
+        assert "approve" in result.execute_as_prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_recipe_cancel_returns_prompt(self, handler: SlashCommandHandler) -> None:
+        """Recipe cancel translates to Amplifier prompt."""
+        command = ParsedCommand(name="recipe", args="cancel sess456", raw="/recipe cancel sess456")
+        result = await handler.execute(command)
+
+        assert result.success is True
+        assert result.execute_as_prompt is not None
+        assert "sess456" in result.execute_as_prompt
+        assert "cancel" in result.execute_as_prompt.lower()
