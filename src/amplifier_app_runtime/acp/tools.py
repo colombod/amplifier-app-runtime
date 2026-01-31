@@ -53,7 +53,7 @@ class IdeTerminalTool:
     Implements the Amplifier Tool protocol:
     - name: str property
     - description: str property
-    - get_schema() -> dict
+    - input_schema: dict property
     - execute(input) -> ToolResult
     """
 
@@ -85,8 +85,9 @@ Args:
         self._get_client = get_client
         self._session_id = session_id
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return JSON Schema for tool input (Amplifier convention)."""
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """Return JSON Schema for tool input (Amplifier Tool protocol)."""
         return {
             "type": "object",
             "properties": {
@@ -298,8 +299,9 @@ Args:
         self._get_client = get_client
         self._session_id = session_id
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return JSON Schema for tool input (Amplifier convention)."""
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """Return JSON Schema for tool input (Amplifier Tool protocol)."""
         return {
             "type": "object",
             "properties": {
@@ -403,8 +405,9 @@ Args:
         self._get_client = get_client
         self._session_id = session_id
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return JSON Schema for tool input (Amplifier convention)."""
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """Return JSON Schema for tool input (Amplifier Tool protocol)."""
         return {
             "type": "object",
             "properties": {

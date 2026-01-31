@@ -283,7 +283,8 @@ class AmplifierAgent(Agent):
                     session_id,
                     update_agent_message(text_block(f"Error: Session not found: {session_id}")),
                 )
-            return PromptResponse(stopReason="error")
+            # Use "cancelled" for error cases - "error" is not a valid ACP stopReason
+            return PromptResponse(stopReason="cancelled")
 
         # Pass full content blocks to session for multi-modal handling
         # The session will handle conversion and context pre-population
@@ -722,7 +723,7 @@ class AmplifierAgentSession:
         conversation context so the LLM can see it, then execution proceeds with
         the text portion as the prompt.
 
-        Returns stop reason: 'end_turn', 'cancelled', or 'error'.
+        Returns stop reason: 'end_turn' or 'cancelled'.
         """
         self._cancel_event.clear()
 
@@ -752,7 +753,7 @@ class AmplifierAgentSession:
 
         if not self._amplifier_session:
             logger.error("Session not initialized")
-            return "error"
+            return "cancelled"  # "error" is not a valid ACP stopReason
 
         # Inject warnings about unsupported content as system context
         if warnings and self._conn:
@@ -783,7 +784,7 @@ class AmplifierAgentSession:
                     self.session_id,
                     update_agent_message(text_block(f"Error: {e}")),
                 )
-            return "error"
+            return "cancelled"  # "error" is not a valid ACP stopReason
 
     async def _prepopulate_multimodal_context(self, amplifier_blocks: list[dict[str, Any]]) -> None:
         """Pre-populate the conversation context with multi-modal content.

@@ -117,11 +117,12 @@ class AcpToolsTestClient(Client):
 
     async def create_terminal(
         self,
-        session_id: str,
         command: str,
+        session_id: str,
         args: list[str] | None = None,
         cwd: str | None = None,
         env: list[dict[str, str]] | None = None,
+        output_byte_limit: int | None = None,
         **kwargs: Any,
     ) -> CreateTerminalResponse:
         """Handle terminal/create - called by ide_terminal tool."""
@@ -220,10 +221,10 @@ class AcpToolsTestClient(Client):
 
     async def read_text_file(
         self,
-        session_id: str,
         path: str,
-        line: int | None = None,
+        session_id: str,
         limit: int | None = None,
+        line: int | None = None,
         **kwargs: Any,
     ) -> ReadTextFileResponse:
         """Handle fs/read_text_file - called by ide_read_file tool."""
@@ -243,9 +244,9 @@ class AcpToolsTestClient(Client):
 
     async def write_text_file(
         self,
-        session_id: str,
-        path: str,
         content: str,
+        path: str,
+        session_id: str,
         **kwargs: Any,
     ) -> None:
         """Handle fs/write_text_file - called by ide_write_file tool."""
