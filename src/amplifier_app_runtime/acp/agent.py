@@ -52,6 +52,13 @@ from acp.schema import (  # type: ignore[import-untyped]
     ToolCallUpdate,
 )
 
+from .slash_commands import (
+    SlashCommandHandler,
+    SlashCommandRegistry,
+    create_available_commands_update,
+    parse_slash_command,
+)
+
 if TYPE_CHECKING:
     from ..session import ManagedSession
 
@@ -426,6 +433,8 @@ class AmplifierAgentSession:
         self._amplifier_session: ManagedSession | None = None
         self._cancel_event = asyncio.Event()
         self._registered_acp_tools: list[str] = []
+        # Slash command handler for IDE commands
+        self._slash_handler: SlashCommandHandler | None = None
 
     async def initialize(self) -> None:
         """Initialize the underlying Amplifier session."""
@@ -470,6 +479,12 @@ class AmplifierAgentSession:
         # Register ACP client-side tools based on capabilities
         await self._register_acp_tools()
 
+        # Initialize slash command handler
+        self._slash_handler = SlashCommandHandler(self._amplifier_session)
+
+        # Send available commands to client
+        await self._send_available_commands()
+
     async def _register_acp_tools(self) -> None:
         """Register ACP client-side tools on this session.
 
@@ -508,12 +523,38 @@ class AmplifierAgentSession:
         except Exception as e:
             logger.warning(f"Failed to register ACP tools: {e}")
 
+    async def _send_available_commands(self) -> None:
+        """Send available slash commands to the ACP client.
+
+        This advertises commands like /help, /mode, /tools to the IDE
+        for autocomplete and command palette integration.
+        """
+        if not self._conn:
+            return
+
+        try:
+            commands = SlashCommandRegistry.get_commands_for_session(self._amplifier_session)
+            update = create_available_commands_update(self._amplifier_session)
+            await self._conn.session_update(self.session_id, update)
+            logger.debug(f"Sent {len(commands)} available commands to session {self.session_id}")
+        except Exception as e:
+            logger.warning(f"Failed to send available commands: {e}")
+
     async def execute_prompt(self, content: str) -> str:
         """Execute prompt and stream updates back via ACP.
+
+        Handles two types of input:
+        1. Slash commands (/help, /mode, etc.) - handled locally
+        2. Regular prompts - forwarded to Amplifier
 
         Returns stop reason: 'end_turn', 'cancelled', or 'error'.
         """
         self._cancel_event.clear()
+
+        # Check for slash command
+        parsed = parse_slash_command(content)
+        if parsed and self._slash_handler:
+            return await self._execute_slash_command(parsed)
 
         if not self._amplifier_session:
             logger.error("Session not initialized")
@@ -535,6 +576,44 @@ class AmplifierAgentSession:
         except Exception as e:
             logger.exception(f"Error executing prompt: {e}")
             # Send error as agent message
+            if self._conn:
+                await self._conn.session_update(
+                    self.session_id,
+                    update_agent_message(text_block(f"Error: {e}")),
+                )
+            return "error"
+
+    async def _execute_slash_command(self, parsed: Any) -> str:
+        """Execute a slash command and send result to client.
+
+        Args:
+            parsed: ParsedCommand from parse_slash_command()
+
+        Returns:
+            Stop reason: 'end_turn' or 'error'
+        """
+        if not self._slash_handler:
+            logger.error("Slash handler not initialized")
+            return "error"
+
+        try:
+            result = await self._slash_handler.execute(parsed)
+
+            # Send result as agent message
+            if result.send_as_message and self._conn:
+                await self._conn.session_update(
+                    self.session_id,
+                    update_agent_message(text_block(result.message)),
+                )
+
+            # If command changed state, send updated commands list
+            if result.update_commands:
+                await self._send_available_commands()
+
+            return "end_turn" if result.success else "error"
+
+        except Exception as e:
+            logger.exception(f"Error executing slash command: {e}")
             if self._conn:
                 await self._conn.session_update(
                     self.session_id,
