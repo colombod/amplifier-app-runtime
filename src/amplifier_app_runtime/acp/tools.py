@@ -8,6 +8,7 @@ Architecture:
 - Tools take a `get_client` callable for lazy client access
 - Tools check client availability before executing
 - Tools are registered per-session based on client capabilities
+- Tools implement the Amplifier Tool protocol (name, description, execute, get_schema)
 
 Usage:
     from .tools import register_acp_tools
@@ -25,24 +26,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+# Import ToolResult from amplifier_core for Amplifier protocol compliance
+from amplifier_core.models import ToolResult
 
 if TYPE_CHECKING:
     from acp import Client  # type: ignore[import-untyped]
     from acp.schema import ClientCapabilities  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ToolResult:
-    """Result from a tool execution."""
-
-    success: bool = True
-    output: Any = None
-    error: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class IdeTerminalTool:
@@ -56,6 +49,12 @@ class IdeTerminalTool:
     2. terminal/wait_for_exit - Wait for completion
     3. terminal/output - Get the output
     4. terminal/release - Cleanup resources
+
+    Implements the Amplifier Tool protocol:
+    - name: str property
+    - description: str property
+    - get_schema() -> dict
+    - execute(input) -> ToolResult
     """
 
     name = "ide_terminal"
@@ -86,9 +85,8 @@ Args:
         self._get_client = get_client
         self._session_id = session_id
 
-    @property
-    def parameters(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters."""
+    def get_schema(self) -> dict[str, Any]:
+        """Return JSON Schema for tool input (Amplifier convention)."""
         return {
             "type": "object",
             "properties": {
@@ -119,24 +117,25 @@ Args:
             "required": ["command"],
         }
 
-    @property
-    def input_schema(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters (Amplifier protocol)."""
-        return self.parameters
-
     async def execute(self, input: dict[str, Any]) -> ToolResult:
         """Execute a command in the IDE's terminal."""
         client = self._get_client()
         if not client:
             return ToolResult(
                 success=False,
-                error="ACP client not connected - cannot execute on IDE. "
-                "Use 'bash' for server-side commands.",
+                error={
+                    "message": "ACP client not connected - cannot execute on IDE. "
+                    "Use 'bash' for server-side commands.",
+                    "type": "ConnectionError",
+                },
             )
 
         command = input.get("command")
         if not command:
-            return ToolResult(success=False, error="command is required")
+            return ToolResult(
+                success=False,
+                error={"message": "command is required", "type": "ValidationError"},
+            )
 
         args = input.get("args", [])
         cwd = input.get("cwd")
@@ -183,25 +182,42 @@ Args:
             output_text = getattr(output_result, "output", "")
             truncated = getattr(output_result, "truncated", False)
 
-            return ToolResult(
-                success=exit_code == 0 if exit_code is not None else True,
-                output=output_text,
-                metadata={
-                    "exit_code": exit_code,
-                    "truncated": truncated,
-                    "terminal_id": terminal_id,
-                },
-            )
+            # Format output with metadata
+            result_output = {
+                "output": output_text,
+                "exit_code": exit_code,
+                "truncated": truncated,
+                "terminal_id": terminal_id,
+            }
+
+            if exit_code is not None and exit_code != 0:
+                return ToolResult(
+                    success=False,
+                    output=result_output,
+                    error={
+                        "message": f"Command exited with code {exit_code}",
+                        "type": "CommandError",
+                        "exit_code": exit_code,
+                    },
+                )
+
+            return ToolResult(success=True, output=result_output)
 
         except TimeoutError:
             return ToolResult(
                 success=False,
-                error=f"Command timed out after {timeout} seconds",
-                metadata={"terminal_id": terminal_id},
+                output={"terminal_id": terminal_id},
+                error={
+                    "message": f"Command timed out after {timeout} seconds",
+                    "type": "TimeoutError",
+                },
             )
         except Exception as e:
             logger.error(f"IDE terminal error: {e}")
-            return ToolResult(success=False, error=str(e))
+            return ToolResult(
+                success=False,
+                error={"message": str(e), "type": type(e).__name__},
+            )
         finally:
             # 4. Always release terminal
             if terminal_id and client:
@@ -247,6 +263,12 @@ class IdeReadFileTool:
 
     Reads files ON THE USER'S MACHINE, including unsaved editor buffers!
     This is the key differentiator from server-side read_file.
+
+    Implements the Amplifier Tool protocol:
+    - name: str property
+    - description: str property
+    - get_schema() -> dict
+    - execute(input) -> ToolResult
     """
 
     name = "ide_read_file"
@@ -276,9 +298,8 @@ Args:
         self._get_client = get_client
         self._session_id = session_id
 
-    @property
-    def parameters(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters."""
+    def get_schema(self) -> dict[str, Any]:
+        """Return JSON Schema for tool input (Amplifier convention)."""
         return {
             "type": "object",
             "properties": {
@@ -298,24 +319,25 @@ Args:
             "required": ["path"],
         }
 
-    @property
-    def input_schema(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters (Amplifier protocol)."""
-        return self.parameters
-
     async def execute(self, input: dict[str, Any]) -> ToolResult:
         """Read a file from the IDE's file system."""
         client = self._get_client()
         if not client:
             return ToolResult(
                 success=False,
-                error="ACP client not connected - cannot read from IDE. "
-                "Use 'read_file' for server-side files.",
+                error={
+                    "message": "ACP client not connected - cannot read from IDE. "
+                    "Use 'read_file' for server-side files.",
+                    "type": "ConnectionError",
+                },
             )
 
         path = input.get("path")
         if not path:
-            return ToolResult(success=False, error="path is required")
+            return ToolResult(
+                success=False,
+                error={"message": "path is required", "type": "ValidationError"},
+            )
 
         line = input.get("line")
         limit = input.get("limit")
@@ -333,18 +355,26 @@ Args:
             return ToolResult(
                 success=True,
                 output=content,
-                metadata={"path": path, "line": line, "limit": limit},
             )
 
         except Exception as e:
             logger.error(f"IDE read file error: {e}")
-            return ToolResult(success=False, error=str(e))
+            return ToolResult(
+                success=False,
+                error={"message": str(e), "type": type(e).__name__},
+            )
 
 
 class IdeWriteFileTool:
     """Write files to the IDE's file system.
 
     Writes files ON THE USER'S MACHINE. The editor tracks the change.
+
+    Implements the Amplifier Tool protocol:
+    - name: str property
+    - description: str property
+    - get_schema() -> dict
+    - execute(input) -> ToolResult
     """
 
     name = "ide_write_file"
@@ -373,9 +403,8 @@ Args:
         self._get_client = get_client
         self._session_id = session_id
 
-    @property
-    def parameters(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters."""
+    def get_schema(self) -> dict[str, Any]:
+        """Return JSON Schema for tool input (Amplifier convention)."""
         return {
             "type": "object",
             "properties": {
@@ -391,28 +420,32 @@ Args:
             "required": ["path", "content"],
         }
 
-    @property
-    def input_schema(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters (Amplifier protocol)."""
-        return self.parameters
-
     async def execute(self, input: dict[str, Any]) -> ToolResult:
         """Write a file to the IDE's file system."""
         client = self._get_client()
         if not client:
             return ToolResult(
                 success=False,
-                error="ACP client not connected - cannot write to IDE. "
-                "Use 'write_file' for server-side files.",
+                error={
+                    "message": "ACP client not connected - cannot write to IDE. "
+                    "Use 'write_file' for server-side files.",
+                    "type": "ConnectionError",
+                },
             )
 
         path = input.get("path")
         content = input.get("content")
 
         if not path:
-            return ToolResult(success=False, error="path is required")
+            return ToolResult(
+                success=False,
+                error={"message": "path is required", "type": "ValidationError"},
+            )
         if content is None:
-            return ToolResult(success=False, error="content is required")
+            return ToolResult(
+                success=False,
+                error={"message": "content is required", "type": "ValidationError"},
+            )
 
         try:
             logger.info(f"Writing IDE file: {path} ({len(content)} bytes)")
@@ -425,12 +458,14 @@ Args:
             return ToolResult(
                 success=True,
                 output=f"Successfully wrote {len(content)} bytes to {path}",
-                metadata={"path": path, "bytes_written": len(content)},
             )
 
         except Exception as e:
             logger.error(f"IDE write file error: {e}")
-            return ToolResult(success=False, error=str(e))
+            return ToolResult(
+                success=False,
+                error={"message": str(e), "type": type(e).__name__},
+            )
 
 
 def create_acp_tools(
@@ -486,6 +521,9 @@ async def register_acp_tools(
     Tools are registered based on client capabilities. If the client
     doesn't support a capability, that tool won't be registered.
 
+    Tools are mounted using the Amplifier coordinator.mount() pattern,
+    which stores tools by name in the session's mount_points.
+
     Args:
         session: AmplifierSession (or ManagedSession) to register tools on
         get_client: Callable that returns the ACP Client connection
@@ -495,7 +533,7 @@ async def register_acp_tools(
     Returns:
         List of registered tool names
     """
-    registered = []
+    registered: list[str] = []
 
     # Get coordinator from session
     # Handle both direct AmplifierSession and ManagedSession wrapper
@@ -519,7 +557,9 @@ async def register_acp_tools(
     for tool, should_register in tools_with_caps:
         if should_register:
             try:
-                await coordinator.mount("tools", tool, name=tool.name)
+                # Use coordinator.mount() - the standard Amplifier pattern
+                # The name parameter is optional since tool has .name property
+                await coordinator.mount("tools", tool)
                 registered.append(tool.name)
                 logger.info(f"Registered ACP tool: {tool.name}")
             except Exception as e:

@@ -27,6 +27,7 @@ from acp import (  # type: ignore[import-untyped]
 )
 from acp.schema import (  # type: ignore[import-untyped]
     AgentCapabilities,
+    AgentPlanUpdate,
     AudioContentBlock,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
@@ -38,6 +39,7 @@ from acp.schema import (  # type: ignore[import-untyped]
     McpCapabilities,
     McpServerStdio,
     NewSessionResponse,
+    PlanEntry,
     PromptCapabilities,
     PromptResponse,
     ResourceContentBlock,
@@ -548,6 +550,14 @@ class AmplifierAgentSession:
 
         Uses the SDK's session_update() method which properly formats
         and sends the notification.
+
+        ACP Protocol Mapping:
+        - tool:pre -> ToolCallStart (sessionUpdate="tool_call")
+        - tool:post -> ToolCallUpdate with status="completed"
+        - tool:error -> ToolCallUpdate with status="failed"
+        - todo:update -> AgentPlanUpdate (sessionUpdate="plan")
+        - content_block:* -> update_agent_message
+        - thinking:* -> update_agent_thought
         """
         if not self._conn:
             return
@@ -595,39 +605,52 @@ class AmplifierAgentSession:
                     )
 
             elif event_type == "tool:pre":
-                # Tool call starting
+                # Tool call starting - ACP ToolCallStart
                 tool_info = props.get("tool", {})
                 tool_name = (
                     tool_info.get("name", "") if isinstance(tool_info, dict) else str(tool_info)
                 )
+                tool_call_id = props.get("call_id", "")
+                arguments = props.get("arguments", {})
+
+                # Generate human-readable title from tool name
+                title = self._generate_tool_title(tool_name, arguments)
+
+                # Infer tool kind from name
+                kind = self._infer_tool_kind(tool_name)
 
                 update = ToolCallStart(
-                    sessionUpdate="tool_call",
-                    id=props.get("call_id", ""),
-                    name=tool_name,
-                    input=props.get("arguments", {}),
+                    session_update="tool_call",
+                    tool_call_id=tool_call_id,
+                    title=title,
+                    kind=kind,
+                    status="pending",
+                    raw_input=arguments,
                 )
                 await self._conn.session_update(self.session_id, update)
 
             elif event_type == "tool:post":
-                # Tool call completed
+                # Tool call completed - ACP ToolCallUpdate
                 update = ToolCallUpdate(
-                    sessionUpdate="tool_call_update",
-                    id=props.get("call_id", ""),
+                    tool_call_id=props.get("call_id", ""),
                     status="completed",
-                    output=props.get("result"),
+                    raw_output=props.get("result"),
                 )
                 await self._conn.session_update(self.session_id, update)
 
             elif event_type == "tool:error":
-                # Tool call failed
+                # Tool call failed - ACP ToolCallUpdate with status="failed"
+                error_info = props.get("error", "Unknown error")
                 update = ToolCallUpdate(
-                    sessionUpdate="tool_call_update",
-                    id=props.get("call_id", ""),
-                    status="error",
-                    error=props.get("error"),
+                    tool_call_id=props.get("call_id", ""),
+                    status="failed",
+                    raw_output={"error": str(error_info)},
                 )
                 await self._conn.session_update(self.session_id, update)
+
+            elif event_type == "todo:update":
+                # Todo list update - map to ACP AgentPlanUpdate
+                await self._handle_todo_update(props)
 
             elif event_type in ("thinking:delta", "thinking:final", "thinking:start"):
                 # Thinking/reasoning content
@@ -655,6 +678,115 @@ class AmplifierAgentSession:
 
         except Exception as e:
             logger.warning(f"Error sending event {event_type}: {e}")
+
+    def _generate_tool_title(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Generate a human-readable title for a tool call.
+
+        Maps common tool names to descriptive titles, optionally incorporating
+        key argument values for context.
+        """
+        # Tool-specific title generation
+        title_map = {
+            "read_file": lambda args: f"Reading {args.get('file_path', 'file')}",
+            "write_file": lambda args: f"Writing {args.get('file_path', 'file')}",
+            "edit_file": lambda args: f"Editing {args.get('file_path', 'file')}",
+            "glob": lambda args: f"Finding files: {args.get('pattern', '*')}",
+            "grep": lambda args: f"Searching for: {args.get('pattern', '...')}",
+            "bash": lambda args: "Running command",
+            "web_fetch": lambda args: f"Fetching {args.get('url', 'URL')}",
+            "web_search": lambda args: f"Searching: {args.get('query', '...')}",
+            "task": lambda args: f"Delegating to {args.get('agent', 'agent')}",
+            "todo": lambda args: "Updating task list",
+            "recipes": lambda args: f"Running recipe: {args.get('operation', 'operation')}",
+            "python_check": lambda args: "Checking Python code",
+        }
+
+        if tool_name in title_map:
+            try:
+                return title_map[tool_name](arguments)
+            except Exception:
+                pass
+
+        # Default: humanize the tool name
+        return tool_name.replace("_", " ").title()
+
+    def _infer_tool_kind(self, tool_name: str) -> str:
+        """Infer the ACP tool kind from the tool name.
+
+        ACP tool kinds: read, edit, delete, move, search, execute, think, fetch, other
+        """
+        # Map tool names to ACP kinds
+        kind_map = {
+            # Read operations
+            "read_file": "read",
+            "glob": "read",
+            "load_skill": "read",
+            # Edit operations
+            "write_file": "edit",
+            "edit_file": "edit",
+            # Search operations
+            "grep": "search",
+            "web_search": "search",
+            # Execute operations
+            "bash": "execute",
+            "python_check": "execute",
+            "recipes": "execute",
+            # Fetch operations
+            "web_fetch": "fetch",
+            # Think/plan operations
+            "todo": "think",
+            "task": "think",
+        }
+
+        return kind_map.get(tool_name, "other")
+
+    async def _handle_todo_update(self, props: dict[str, Any]) -> None:
+        """Convert Amplifier todo:update event to ACP AgentPlanUpdate.
+
+        Maps Amplifier todo statuses to ACP plan entry statuses:
+        - pending -> pending
+        - in_progress -> in_progress
+        - completed -> completed
+
+        Maps Amplifier priorities (if present) or defaults to medium.
+        """
+        if not self._conn:
+            return
+
+        todos = props.get("todos", [])
+        if not todos:
+            return
+
+        # Convert todos to ACP PlanEntry format
+        entries = []
+        for todo in todos:
+            # Map status
+            status = todo.get("status", "pending")
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+
+            # Map priority (default to medium if not specified)
+            priority = todo.get("priority", "medium")
+            if priority not in ("high", "medium", "low"):
+                priority = "medium"
+
+            # Get content - use content field or activeForm as fallback
+            content = todo.get("content", "") or todo.get("activeForm", "Task")
+
+            entries.append(
+                PlanEntry(
+                    content=content,
+                    priority=priority,
+                    status=status,
+                )
+            )
+
+        # Send plan update
+        update = AgentPlanUpdate(
+            session_update="plan",
+            entries=entries,
+        )
+        await self._conn.session_update(self.session_id, update)
 
     async def cancel(self) -> None:
         """Cancel ongoing execution."""
