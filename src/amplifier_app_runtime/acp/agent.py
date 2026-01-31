@@ -130,9 +130,9 @@ class AmplifierAgent(Agent):
                 loadSession=True,
                 mcpCapabilities=McpCapabilities(http=False, sse=True),
                 promptCapabilities=PromptCapabilities(
-                    audio=False,
-                    embeddedContext=True,
-                    image=False,
+                    audio=False,  # Not supported by Amplifier kernel
+                    embeddedContext=True,  # Supported
+                    image=True,  # Supported via context pre-population
                 ),
             ),
             authMethods=[],
@@ -285,11 +285,9 @@ class AmplifierAgent(Agent):
                 )
             return PromptResponse(stopReason="error")
 
-        # Extract text content
-        text_content = self._extract_text_content(prompt)
-
-        # Execute and stream
-        stop_reason = await session.execute_prompt(text_content)
+        # Pass full content blocks to session for multi-modal handling
+        # The session will handle conversion and context pre-population
+        stop_reason = await session.execute_prompt(prompt)
 
         return PromptResponse(stopReason=stop_reason)
 
@@ -540,19 +538,200 @@ class AmplifierAgentSession:
         except Exception as e:
             logger.warning(f"Failed to send available commands: {e}")
 
-    async def execute_prompt(self, content: str) -> str:
+    # Supported image MIME types for multi-modal content
+    _SUPPORTED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+    def _convert_acp_to_amplifier_blocks(
+        self,
+        blocks: list[Any],
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
+        """Convert ACP content blocks to Amplifier format.
+
+        Args:
+            blocks: List of ACP content blocks (TextContentBlock, ImageContentBlock, etc.)
+
+        Returns:
+            amplifier_blocks: List of Amplifier-compatible content blocks
+            text_prompt: Extracted text to use as the prompt
+            warnings: List of warning messages for unsupported content
+        """
+        amplifier_blocks: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+        warnings: list[str] = []
+
+        for block in blocks:
+            # Handle TextContentBlock
+            if isinstance(block, TextContentBlock):
+                text_parts.append(block.text)
+                amplifier_blocks.append({"type": "text", "text": block.text})
+
+            # Handle dict-style text block
+            elif isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                text_parts.append(text)
+                amplifier_blocks.append({"type": "text", "text": text})
+
+            # Handle ImageContentBlock
+            elif isinstance(block, ImageContentBlock):
+                converted = self._convert_image_block(block)
+                if converted:
+                    amplifier_blocks.append(converted)
+                else:
+                    warnings.append(
+                        f"Unsupported image type: {getattr(block, 'mimeType', 'unknown')}. "
+                        f"Supported types: {', '.join(sorted(self._SUPPORTED_IMAGE_TYPES))}"
+                    )
+
+            # Handle AudioContentBlock (not supported)
+            elif isinstance(block, AudioContentBlock):
+                warnings.append("Audio content is not currently supported.")
+
+            # Handle EmbeddedResourceContentBlock
+            elif isinstance(block, EmbeddedResourceContentBlock):
+                converted = self._convert_embedded_resource(block)
+                if converted:
+                    amplifier_blocks.append(converted)
+                    # Also extract text for the prompt if it's a text resource
+                    if converted.get("type") == "text":
+                        text_parts.append(converted.get("text", ""))
+
+            # Handle ResourceContentBlock (external URI - not supported)
+            elif isinstance(block, ResourceContentBlock):
+                warnings.append(
+                    "External resource links cannot be fetched. Please embed content directly."
+                )
+
+            # Handle generic object with type attribute
+            elif hasattr(block, "type"):
+                block_type = getattr(block, "type", None)
+                if block_type == "text":
+                    text = getattr(block, "text", "")
+                    text_parts.append(text)
+                    amplifier_blocks.append({"type": "text", "text": text})
+                else:
+                    logger.debug(f"Skipping unsupported block type: {block_type}")
+
+        # Build text prompt from all text parts
+        text_prompt = "\n".join(text_parts).strip()
+
+        # If no text content after filtering, use fallback
+        if not text_prompt and not any(b.get("type") == "image" for b in amplifier_blocks):
+            text_prompt = "Please provide content with text or images."
+
+        return amplifier_blocks, text_prompt, warnings
+
+    def _convert_image_block(self, block: ImageContentBlock) -> dict[str, Any] | None:
+        """Convert ACP ImageContentBlock to Amplifier image format.
+
+        Args:
+            block: ACP ImageContentBlock with data and mimeType
+
+        Returns:
+            Amplifier image block format or None if unsupported type:
+            {"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}
+        """
+        # Get MIME type - handle both attribute styles
+        mime_type = getattr(block, "mimeType", None) or getattr(block, "mime_type", None)
+        if not mime_type:
+            return None
+
+        # Check if supported
+        if mime_type not in self._SUPPORTED_IMAGE_TYPES:
+            return None
+
+        # Get base64 data
+        data = getattr(block, "data", None)
+        if not data:
+            return None
+
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime_type,
+                "data": data,
+            },
+        }
+
+    def _convert_embedded_resource(
+        self, block: EmbeddedResourceContentBlock
+    ) -> dict[str, Any] | None:
+        """Convert embedded resource to text or image block.
+
+        Args:
+            block: ACP EmbeddedResourceContentBlock with resource data
+
+        Returns:
+            Amplifier-compatible block (text or image) or None if unsupported
+        """
+        resource = getattr(block, "resource", None)
+        if not resource:
+            return None
+
+        # Get URI for context
+        uri = getattr(resource, "uri", "") or ""
+
+        # Check if it's a text resource
+        text = getattr(resource, "text", None)
+        if text is not None:
+            # Include URI context if available
+            if uri:
+                return {"type": "text", "text": f"[Resource: {uri}]\n{text}"}
+            return {"type": "text", "text": text}
+
+        # Check if it's a blob resource (potentially an image)
+        blob = getattr(resource, "blob", None)
+        if blob:
+            mime_type = getattr(resource, "mimeType", None) or getattr(resource, "mime_type", None)
+            if mime_type and mime_type in self._SUPPORTED_IMAGE_TYPES:
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": blob,
+                    },
+                }
+
+        return None
+
+    async def execute_prompt(self, content: str | list[Any]) -> str:
         """Execute prompt and stream updates back via ACP.
 
-        Handles two types of input:
-        1. Slash commands (/help, /mode, etc.) - handled locally
-        2. Regular prompts - forwarded to Amplifier
+        Handles three types of input:
+        1. String content (legacy) - works exactly as before
+        2. List of ACP content blocks - converts and handles multi-modal content
+        3. Slash commands (/help, /mode, etc.) - handled locally
+
+        For multi-modal content (images), the content is pre-populated into the
+        conversation context so the LLM can see it, then execution proceeds with
+        the text portion as the prompt.
 
         Returns stop reason: 'end_turn', 'cancelled', or 'error'.
         """
         self._cancel_event.clear()
 
-        # Check for slash command
-        parsed = parse_slash_command(content)
+        # Handle multi-modal content (list of ACP content blocks)
+        text_prompt: str
+        has_multimodal = False
+        warnings: list[str] = []
+
+        if isinstance(content, list):
+            # Convert ACP blocks to Amplifier format
+            amplifier_blocks, text_prompt, warnings = self._convert_acp_to_amplifier_blocks(content)
+
+            # Check if we have multi-modal content (images)
+            has_multimodal = any(b.get("type") == "image" for b in amplifier_blocks)
+
+            # Pre-populate context with multi-modal content if present
+            if has_multimodal and self._amplifier_session:
+                await self._prepopulate_multimodal_context(amplifier_blocks)
+        else:
+            # Legacy string content - use as-is
+            text_prompt = content
+
+        # Check for slash command (only on text prompts)
+        parsed = parse_slash_command(text_prompt)
         if parsed and self._slash_handler:
             return await self._execute_slash_command(parsed)
 
@@ -560,9 +739,17 @@ class AmplifierAgentSession:
             logger.error("Session not initialized")
             return "error"
 
+        # Inject warnings about unsupported content as system context
+        if warnings and self._conn:
+            warning_text = "Note: " + " ".join(warnings)
+            await self._conn.session_update(
+                self.session_id,
+                update_agent_message(text_block(warning_text)),
+            )
+
         try:
             # Execute and let the hook stream events
-            async for event in self._amplifier_session.execute(content):
+            async for event in self._amplifier_session.execute(text_prompt):
                 if self._cancel_event.is_set():
                     return "cancelled"
 
@@ -582,6 +769,44 @@ class AmplifierAgentSession:
                     update_agent_message(text_block(f"Error: {e}")),
                 )
             return "error"
+
+    async def _prepopulate_multimodal_context(self, amplifier_blocks: list[dict[str, Any]]) -> None:
+        """Pre-populate the conversation context with multi-modal content.
+
+        This adds a user message containing all content blocks (text + images)
+        to the conversation context before execution. The orchestrator will
+        see this message and include it in the LLM request.
+
+        Args:
+            amplifier_blocks: List of Amplifier-compatible content blocks
+        """
+        if not self._amplifier_session:
+            return
+
+        try:
+            # Get context manager from the internal AmplifierSession
+            # ManagedSession wraps AmplifierSession in _amplifier_session attribute
+            amplifier_session = getattr(self._amplifier_session, "_amplifier_session", None)
+            if not amplifier_session:
+                logger.warning("Internal AmplifierSession not available")
+                return
+
+            coordinator = getattr(amplifier_session, "coordinator", None)
+            if not coordinator:
+                logger.warning("Coordinator not available for multi-modal pre-population")
+                return
+
+            context = coordinator.get("context")
+            if context is None:
+                logger.warning("Context manager not available for multi-modal pre-population")
+                return
+
+            # Add user message with multi-modal content
+            await context.add_message({"role": "user", "content": amplifier_blocks})
+            logger.debug(f"Pre-populated context with {len(amplifier_blocks)} content blocks")
+
+        except Exception as e:
+            logger.warning(f"Failed to pre-populate multi-modal context: {e}")
 
     async def _execute_slash_command(self, parsed: Any) -> str:
         """Execute a slash command and send result to client.
