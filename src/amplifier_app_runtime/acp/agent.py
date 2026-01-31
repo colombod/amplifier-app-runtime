@@ -12,7 +12,9 @@ Key pattern from SDK examples:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -66,6 +68,190 @@ logger = logging.getLogger(__name__)
 
 # Default bundle when none specified
 DEFAULT_BUNDLE = "foundation"
+
+# Amplifier session storage location
+AMPLIFIER_PROJECTS_DIR = Path.home() / ".amplifier" / "projects"
+
+
+def _encode_project_path(cwd: str) -> str:
+    """Encode a working directory path to Amplifier's project directory name format.
+
+    Amplifier encodes paths by replacing '/' with '-' and stripping leading '-'.
+    Example: /home/user/project -> -home-user-project
+    """
+    # Normalize the path and replace / with -
+    normalized = os.path.normpath(cwd)
+    encoded = normalized.replace("/", "-").replace("\\", "-")
+    # Ensure it starts with - (Unix paths start with /)
+    if not encoded.startswith("-"):
+        encoded = "-" + encoded
+    return encoded
+
+
+def _decode_project_path(encoded: str) -> str:
+    """Decode an Amplifier project directory name back to a path.
+
+    Example: -home-user-project -> /home/user/project
+    """
+    # Replace - with / and handle the leading -
+    if encoded.startswith("-"):
+        encoded = encoded[1:]  # Remove leading -
+    return "/" + encoded.replace("-", "/")
+
+
+async def discover_sessions(
+    cwd: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Discover Amplifier sessions from the filesystem.
+
+    Args:
+        cwd: If provided, only return sessions for this working directory.
+             If None, returns sessions from all projects.
+        limit: Maximum number of sessions to return.
+
+    Returns:
+        List of session metadata dicts with keys:
+        - session_id: The session ID
+        - cwd: Working directory for the session
+        - name: Human-readable name (may be None)
+        - created: ISO datetime string
+        - updated: ISO datetime string
+        - turn_count: Number of turns in session
+        - state: Session state (ready, etc.)
+        - bundle: Bundle name
+        - is_child: Whether this is a child/spawned session
+    """
+    sessions = []
+
+    if not AMPLIFIER_PROJECTS_DIR.exists():
+        return sessions
+
+    # Determine which project directories to scan
+    project_dirs = []
+    if cwd:
+        # Only scan the specific project directory
+        encoded_path = _encode_project_path(cwd)
+        project_dir = AMPLIFIER_PROJECTS_DIR / encoded_path
+        if project_dir.exists():
+            project_dirs.append((project_dir, cwd))
+    else:
+        # Scan all project directories
+        for project_dir in AMPLIFIER_PROJECTS_DIR.iterdir():
+            if project_dir.is_dir():
+                decoded_cwd = _decode_project_path(project_dir.name)
+                project_dirs.append((project_dir, decoded_cwd))
+
+    # Scan each project's sessions directory
+    for project_dir, project_cwd in project_dirs:
+        sessions_dir = project_dir / "sessions"
+        if not sessions_dir.exists():
+            continue
+
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+
+            metadata_file = session_dir / "metadata.json"
+            if not metadata_file.exists():
+                # Try to construct minimal metadata from directory name
+                session_id = session_dir.name
+                # Check if it's a child session (contains agent name after _)
+                is_child = "_" in session_id and "-" in session_id
+
+                sessions.append(
+                    {
+                        "session_id": session_id,
+                        "cwd": project_cwd,
+                        "name": None,
+                        "created": None,
+                        "updated": None,
+                        "turn_count": 0,
+                        "state": "unknown",
+                        "bundle": None,
+                        "is_child": is_child,
+                    }
+                )
+                continue
+
+            try:
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+
+                session_id = metadata.get("session_id", session_dir.name)
+
+                # Check if it's a child session
+                is_child = (
+                    metadata.get("parent_session_id") is not None
+                    or metadata.get("parent_id") is not None
+                    or ("_" in session_id and "-" in session_id)
+                )
+
+                sessions.append(
+                    {
+                        "session_id": session_id,
+                        "cwd": metadata.get("cwd", project_cwd),
+                        "name": metadata.get("name"),
+                        "created": metadata.get("created"),
+                        "updated": metadata.get("updated"),
+                        "turn_count": metadata.get("turn_count", 0),
+                        "state": metadata.get("state", "unknown"),
+                        "bundle": metadata.get("bundle"),
+                        "is_child": is_child,
+                    }
+                )
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to read session metadata {metadata_file}: {e}")
+                continue
+
+        if len(sessions) >= limit:
+            break
+
+    # Sort by updated time (most recent first), handling None values
+    def sort_key(s: dict[str, Any]) -> str:
+        updated = s.get("updated")
+        if updated:
+            return updated
+        created = s.get("created")
+        if created:
+            return created
+        return ""
+
+    sessions.sort(key=sort_key, reverse=True)
+
+    return sessions[:limit]
+
+
+def find_session_directory(session_id: str, cwd: str | None = None) -> Path | None:
+    """Find the directory for a specific session.
+
+    Args:
+        session_id: The session ID to find.
+        cwd: Optional working directory hint to narrow the search.
+
+    Returns:
+        Path to the session directory, or None if not found.
+    """
+    if not AMPLIFIER_PROJECTS_DIR.exists():
+        return None
+
+    # If cwd provided, check that project first
+    if cwd:
+        encoded_path = _encode_project_path(cwd)
+        project_dir = AMPLIFIER_PROJECTS_DIR / encoded_path
+        session_dir = project_dir / "sessions" / session_id
+        if session_dir.exists():
+            return session_dir
+
+    # Search all projects
+    for project_dir in AMPLIFIER_PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+        session_dir = project_dir / "sessions" / session_id
+        if session_dir.exists():
+            return session_dir
+
+    return None
 
 
 class AmplifierAgent(Agent):
@@ -189,8 +375,22 @@ class AmplifierAgent(Agent):
         session_id: str,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
-        """Load an existing session."""
-        # Check if we have it cached
+        """Load an existing session.
+
+        Attempts to load a session in the following order:
+        1. Check in-memory cache (already active sessions)
+        2. Try Amplifier's session manager
+        3. Try to find and load from filesystem storage
+
+        Args:
+            cwd: Working directory for the session.
+            mcp_servers: MCP servers to connect (currently unused).
+            session_id: The session ID to load.
+
+        Returns:
+            LoadSessionResponse if session found and loaded, None otherwise.
+        """
+        # Check if we have it cached (already active)
         if session_id in self._sessions:
             logger.info(f"Loaded cached ACP session: {session_id}")
             return LoadSessionResponse(
@@ -202,29 +402,77 @@ class AmplifierAgent(Agent):
                 ),
             )
 
-        # Try to load from Amplifier session manager
+        # Try to load from Amplifier session manager first
         from ..session import session_manager
 
         amplifier_session = await session_manager.get(session_id)
-        if not amplifier_session:
+
+        if amplifier_session:
+            # Wrap in our session type with client capabilities
+            session = AmplifierAgentSession(
+                session_id=session_id,
+                cwd=cwd,
+                bundle=DEFAULT_BUNDLE,
+                conn=self._conn,
+                client_capabilities=self._client_capabilities,
+            )
+            session._amplifier_session = amplifier_session
+            self._sessions[session_id] = session
+
+            # Register ACP tools for loaded session
+            await session._register_acp_tools()
+
+            logger.info(f"Loaded ACP session from manager: {session_id}")
+
+            return LoadSessionResponse(
+                modes=SessionModeState(
+                    availableModes=[
+                        SessionMode(id="default", name="Default", description="Default agent mode"),
+                    ],
+                    currentModeId="default",
+                ),
+            )
+
+        # Fallback: Try to find session in filesystem storage
+        session_dir = find_session_directory(session_id, cwd)
+        if not session_dir:
             logger.warning(f"Session not found: {session_id}")
             return None
 
-        # Wrap in our session type with client capabilities
+        # Load metadata to get session details
+        metadata_file = session_dir / "metadata.json"
+        bundle = DEFAULT_BUNDLE
+        session_cwd = cwd
+
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+                bundle = metadata.get("bundle") or DEFAULT_BUNDLE
+                session_cwd = metadata.get("cwd") or cwd
+                logger.info(
+                    f"Found session metadata: bundle={bundle}, cwd={session_cwd}, "
+                    f"turns={metadata.get('turn_count', 0)}"
+                )
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to read session metadata: {e}")
+
+        # Create a new session wrapper that will resume from the stored state
+        # The Amplifier session will be created fresh but can restore context
+        # from the events.jsonl file if needed
         session = AmplifierAgentSession(
             session_id=session_id,
-            cwd=cwd,
-            bundle=DEFAULT_BUNDLE,
+            cwd=session_cwd,
+            bundle=bundle,
             conn=self._conn,
             client_capabilities=self._client_capabilities,
         )
-        session._amplifier_session = amplifier_session
+
+        # Initialize with the session directory for potential state restoration
+        await session.initialize(session_dir=session_dir)
         self._sessions[session_id] = session
 
-        # Register ACP tools for loaded session
-        await session._register_acp_tools()
-
-        logger.info(f"Loaded ACP session: {session_id}")
+        logger.info(f"Loaded ACP session from filesystem: {session_id}")
 
         return LoadSessionResponse(
             modes=SessionModeState(
@@ -241,15 +489,49 @@ class AmplifierAgent(Agent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        """List available sessions."""
+        """List available sessions.
+
+        Discovers sessions from Amplifier's filesystem storage at
+        ~/.amplifier/projects/{encoded-path}/sessions/
+
+        Args:
+            cursor: Pagination cursor (not yet implemented).
+            cwd: If provided, only return sessions for this working directory.
+        """
         from acp.schema import ListSessionsResponse, SessionInfo  # type: ignore[import-untyped]
 
         sessions = []
+
+        # First, add any in-memory sessions (currently active)
         for sid, session in self._sessions.items():
             sessions.append(
                 SessionInfo(
                     sessionId=sid,
                     cwd=session.cwd,
+                    name=getattr(session, "name", None),
+                )
+            )
+
+        # Collect IDs of in-memory sessions to avoid duplicates
+        in_memory_ids = set(self._sessions.keys())
+
+        # Discover persisted sessions from filesystem
+        discovered = await discover_sessions(cwd=cwd, limit=50)
+
+        for session_data in discovered:
+            session_id = session_data["session_id"]
+
+            # Skip if already in memory or if it's a child session
+            if session_id in in_memory_ids:
+                continue
+            if session_data.get("is_child"):
+                continue  # Don't list child/spawned sessions
+
+            sessions.append(
+                SessionInfo(
+                    sessionId=session_id,
+                    cwd=session_data.get("cwd") or cwd or "",
+                    name=session_data.get("name"),
                 )
             )
 
@@ -438,8 +720,14 @@ class AmplifierAgentSession:
         self._approval_bridge: Any | None = None
         self._tool_tracker: Any | None = None
 
-    async def initialize(self) -> None:
-        """Initialize the underlying Amplifier session."""
+    async def initialize(self, session_dir: Path | None = None) -> None:
+        """Initialize the underlying Amplifier session.
+
+        Args:
+            session_dir: Optional path to existing session directory for restoration.
+                        If provided, the session will attempt to restore state from
+                        the stored events.jsonl file.
+        """
         from ..bundle_manager import BundleManager
         from ..session import SessionConfig, session_manager
         from ..transport.base import Event
@@ -488,6 +776,11 @@ class AmplifierAgentSession:
 
         # Initialize with prepared bundle
         await self._amplifier_session.initialize(prepared_bundle=prepared_bundle)
+
+        # If restoring from existing session, try to restore context
+        if session_dir:
+            await self._restore_session_context(session_dir)
+
         logger.info(f"Amplifier session {self.session_id} initialized")
 
         # Register ACP client-side tools based on capabilities
@@ -536,6 +829,56 @@ class AmplifierAgentSession:
                 )
         except Exception as e:
             logger.warning(f"Failed to register ACP tools: {e}")
+
+    async def _restore_session_context(self, session_dir: Path) -> None:
+        """Restore session context from stored events.
+
+        This method reads the events.jsonl file and extracts conversation
+        history summary. Full context restoration requires Amplifier's
+        native session resumption mechanism.
+
+        Args:
+            session_dir: Path to the session directory containing events.jsonl.
+        """
+        events_file = session_dir / "events.jsonl"
+        if not events_file.exists():
+            logger.debug(f"No events.jsonl found in {session_dir}, starting fresh")
+            return
+
+        try:
+            # Count events and extract basic info for logging
+            turn_count = 0
+            last_prompt = None
+
+            with open(events_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("event", "")
+                    data = event.get("data", {})
+
+                    if event_type == "turn:start":
+                        turn_count += 1
+                        last_prompt = data.get("prompt", "")[:100]  # First 100 chars
+
+            if turn_count > 0:
+                logger.info(
+                    f"Session {self.session_id} has {turn_count} previous turns. "
+                    f"Last prompt: '{last_prompt}...'"
+                )
+                # Store turn count for potential use
+                self._previous_turn_count = turn_count
+
+        except Exception as e:
+            logger.warning(f"Failed to read session history: {e}")
+            # Continue anyway - session will work but without history awareness
 
     async def _send_available_commands(self) -> None:
         """Send available slash commands to the ACP client.
