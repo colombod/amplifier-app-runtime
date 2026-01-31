@@ -73,6 +73,8 @@ class SessionConfig:
     behaviors: list[str] = field(default_factory=list)
     show_thinking: bool = True
     environment: dict[str, str] = field(default_factory=dict)
+    # Optional custom approval system (e.g., ACPApprovalBridge for IDE integration)
+    approval_system: Any | None = None
 
 
 class ManagedSession:
@@ -147,7 +149,11 @@ class ManagedSession:
 
             try:
                 # Create protocol handlers
-                self._approval = ServerApprovalSystem(send_fn=self._send)
+                # Use custom approval system if provided (e.g., ACPApprovalBridge for IDE)
+                if self.config.approval_system is not None:
+                    self._approval = self.config.approval_system
+                else:
+                    self._approval = ServerApprovalSystem(send_fn=self._send)
                 self._display = ServerDisplaySystem(send_fn=self._send)
                 self._streaming_hook = ServerStreamingHook(
                     send_fn=self._send,

@@ -433,12 +433,16 @@ class AmplifierAgentSession:
         self._registered_acp_tools: list[str] = []
         # Slash command handler for IDE commands
         self._slash_handler: SlashCommandHandler | None = None
+        # ACP approval bridge for IDE permission dialogs
+        self._approval_bridge: Any | None = None
+        self._tool_tracker: Any | None = None
 
     async def initialize(self) -> None:
         """Initialize the underlying Amplifier session."""
         from ..bundle_manager import BundleManager
         from ..session import SessionConfig, session_manager
         from ..transport.base import Event
+        from .approval_bridge import ACPApprovalBridge, ToolCallTracker
 
         # Load and prepare the bundle
         bundle_manager = BundleManager()
@@ -459,10 +463,21 @@ class AmplifierAgentSession:
             """Forward Amplifier events to ACP via conn.session_update()."""
             await self._on_event(event)
 
-        # Create Amplifier session
+        # Create ACP approval bridge for IDE permission dialogs
+        def get_client() -> Client | None:
+            return self._conn
+
+        self._approval_bridge = ACPApprovalBridge(
+            session_id=self.session_id,
+            get_client=get_client,
+        )
+        self._tool_tracker = ToolCallTracker
+
+        # Create Amplifier session with ACP approval bridge
         config = SessionConfig(
             bundle=self.bundle,
             working_directory=self.cwd,
+            approval_system=self._approval_bridge,
         )
         self._amplifier_session = await session_manager.create(
             config=config,
@@ -962,6 +977,11 @@ class AmplifierAgentSession:
                 tool_call_id = props.get("call_id", "")
                 arguments = props.get("arguments", {})
 
+                # Track tool call for approval context (so ACPApprovalBridge
+                # can include tool info in permission requests)
+                if self._tool_tracker:
+                    self._tool_tracker.track(tool_call_id, tool_name, arguments)
+
                 # Generate human-readable title from tool name
                 title = self._generate_tool_title(tool_name, arguments)
 
@@ -980,6 +1000,10 @@ class AmplifierAgentSession:
 
             elif event_type == "tool:post":
                 # Tool call completed - ACP ToolCallUpdate
+                # Clear tool tracking context
+                if self._tool_tracker:
+                    self._tool_tracker.clear()
+
                 update = ToolCallUpdate(
                     tool_call_id=props.get("call_id", ""),
                     status="completed",
@@ -989,6 +1013,10 @@ class AmplifierAgentSession:
 
             elif event_type == "tool:error":
                 # Tool call failed - ACP ToolCallUpdate with status="failed"
+                # Clear tool tracking context
+                if self._tool_tracker:
+                    self._tool_tracker.clear()
+
                 error_info = props.get("error", "Unknown error")
                 update = ToolCallUpdate(
                     tool_call_id=props.get("call_id", ""),
