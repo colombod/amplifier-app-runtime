@@ -23,6 +23,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from .tool_metadata import get_tool_kind, get_tool_title
+
 if TYPE_CHECKING:
     from acp import Client  # type: ignore[import-untyped]
 
@@ -317,18 +319,8 @@ class ACPApprovalBridge:
         Returns:
             Human-readable title
         """
-        # Common tool title patterns
-        title_map = {
-            "bash": f"Run: {arguments.get('command', 'shell command')[:50]}",
-            "write_file": f"Write to {arguments.get('file_path', 'file')}",
-            "edit_file": f"Edit {arguments.get('file_path', 'file')}",
-            "read_file": f"Read {arguments.get('file_path', 'file')}",
-            "glob": f"Search files: {arguments.get('pattern', '*')}",
-            "grep": f"Search content: {arguments.get('pattern', '')}",
-            "web_fetch": f"Fetch URL: {arguments.get('url', '')}",
-            "web_search": f"Search web: {arguments.get('query', '')}",
-        }
-        return title_map.get(tool_name, tool_name.replace("_", " ").title())
+        # Use shared tool metadata for consistent titles across ACP components
+        return get_tool_title(tool_name, arguments)
 
     def _infer_kind(self, tool_name: str) -> str:
         """Infer ACP tool kind from tool name.
@@ -339,15 +331,5 @@ class ACPApprovalBridge:
         Returns:
             ACP tool kind string
         """
-        kind_map = {
-            "bash": "execute",
-            "write_file": "edit",
-            "edit_file": "edit",
-            "read_file": "read",
-            "glob": "read",
-            "grep": "read",
-            "web_fetch": "fetch",
-            "web_search": "fetch",
-            "task": "delegate",
-        }
-        return kind_map.get(tool_name, "other")
+        # Use shared tool metadata for consistent kinds across ACP components
+        return get_tool_kind(tool_name)

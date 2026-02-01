@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -54,6 +53,11 @@ from acp.schema import (  # type: ignore[import-untyped]
     ToolCallUpdate,
 )
 
+from .session_discovery import (
+    AMPLIFIER_PROJECTS_DIR,
+    discover_sessions,
+    find_session_directory,
+)
 from .slash_commands import (
     SlashCommandHandler,
     SlashCommandRegistry,
@@ -69,189 +73,15 @@ logger = logging.getLogger(__name__)
 # Default bundle when none specified
 DEFAULT_BUNDLE = "foundation"
 
-# Amplifier session storage location
-AMPLIFIER_PROJECTS_DIR = Path.home() / ".amplifier" / "projects"
 
-
-def _encode_project_path(cwd: str) -> str:
-    """Encode a working directory path to Amplifier's project directory name format.
-
-    Amplifier encodes paths by replacing '/' with '-' and stripping leading '-'.
-    Example: /home/user/project -> -home-user-project
-    """
-    # Normalize the path and replace / with -
-    normalized = os.path.normpath(cwd)
-    encoded = normalized.replace("/", "-").replace("\\", "-")
-    # Ensure it starts with - (Unix paths start with /)
-    if not encoded.startswith("-"):
-        encoded = "-" + encoded
-    return encoded
-
-
-def _decode_project_path(encoded: str) -> str:
-    """Decode an Amplifier project directory name back to a path.
-
-    Example: -home-user-project -> /home/user/project
-    """
-    # Replace - with / and handle the leading -
-    if encoded.startswith("-"):
-        encoded = encoded[1:]  # Remove leading -
-    return "/" + encoded.replace("-", "/")
-
-
-async def discover_sessions(
-    cwd: str | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Discover Amplifier sessions from the filesystem.
-
-    Args:
-        cwd: If provided, only return sessions for this working directory.
-             If None, returns sessions from all projects.
-        limit: Maximum number of sessions to return.
-
-    Returns:
-        List of session metadata dicts with keys:
-        - session_id: The session ID
-        - cwd: Working directory for the session
-        - name: Human-readable name (may be None)
-        - created: ISO datetime string
-        - updated: ISO datetime string
-        - turn_count: Number of turns in session
-        - state: Session state (ready, etc.)
-        - bundle: Bundle name
-        - is_child: Whether this is a child/spawned session
-    """
-    sessions = []
-
-    if not AMPLIFIER_PROJECTS_DIR.exists():
-        return sessions
-
-    # Determine which project directories to scan
-    project_dirs = []
-    if cwd:
-        # Only scan the specific project directory
-        encoded_path = _encode_project_path(cwd)
-        project_dir = AMPLIFIER_PROJECTS_DIR / encoded_path
-        if project_dir.exists():
-            project_dirs.append((project_dir, cwd))
-    else:
-        # Scan all project directories
-        for project_dir in AMPLIFIER_PROJECTS_DIR.iterdir():
-            if project_dir.is_dir():
-                decoded_cwd = _decode_project_path(project_dir.name)
-                project_dirs.append((project_dir, decoded_cwd))
-
-    # Scan each project's sessions directory
-    for project_dir, project_cwd in project_dirs:
-        sessions_dir = project_dir / "sessions"
-        if not sessions_dir.exists():
-            continue
-
-        for session_dir in sessions_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-
-            metadata_file = session_dir / "metadata.json"
-            if not metadata_file.exists():
-                # Try to construct minimal metadata from directory name
-                session_id = session_dir.name
-                # Check if it's a child session (contains agent name after _)
-                is_child = "_" in session_id and "-" in session_id
-
-                sessions.append(
-                    {
-                        "session_id": session_id,
-                        "cwd": project_cwd,
-                        "name": None,
-                        "created": None,
-                        "updated": None,
-                        "turn_count": 0,
-                        "state": "unknown",
-                        "bundle": None,
-                        "is_child": is_child,
-                    }
-                )
-                continue
-
-            try:
-                with open(metadata_file) as f:
-                    metadata = json.load(f)
-
-                session_id = metadata.get("session_id", session_dir.name)
-
-                # Check if it's a child session
-                is_child = (
-                    metadata.get("parent_session_id") is not None
-                    or metadata.get("parent_id") is not None
-                    or ("_" in session_id and "-" in session_id)
-                )
-
-                sessions.append(
-                    {
-                        "session_id": session_id,
-                        "cwd": metadata.get("cwd", project_cwd),
-                        "name": metadata.get("name"),
-                        "created": metadata.get("created"),
-                        "updated": metadata.get("updated"),
-                        "turn_count": metadata.get("turn_count", 0),
-                        "state": metadata.get("state", "unknown"),
-                        "bundle": metadata.get("bundle"),
-                        "is_child": is_child,
-                    }
-                )
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"Failed to read session metadata {metadata_file}: {e}")
-                continue
-
-        if len(sessions) >= limit:
-            break
-
-    # Sort by updated time (most recent first), handling None values
-    def sort_key(s: dict[str, Any]) -> str:
-        updated = s.get("updated")
-        if updated:
-            return updated
-        created = s.get("created")
-        if created:
-            return created
-        return ""
-
-    sessions.sort(key=sort_key, reverse=True)
-
-    return sessions[:limit]
-
-
-def find_session_directory(session_id: str, cwd: str | None = None) -> Path | None:
-    """Find the directory for a specific session.
-
-    Args:
-        session_id: The session ID to find.
-        cwd: Optional working directory hint to narrow the search.
-
-    Returns:
-        Path to the session directory, or None if not found.
-    """
-    if not AMPLIFIER_PROJECTS_DIR.exists():
-        return None
-
-    # If cwd provided, check that project first
-    if cwd:
-        encoded_path = _encode_project_path(cwd)
-        project_dir = AMPLIFIER_PROJECTS_DIR / encoded_path
-        session_dir = project_dir / "sessions" / session_id
-        if session_dir.exists():
-            return session_dir
-
-    # Search all projects
-    for project_dir in AMPLIFIER_PROJECTS_DIR.iterdir():
-        if not project_dir.is_dir():
-            continue
-        session_dir = project_dir / "sessions" / session_id
-        if session_dir.exists():
-            return session_dir
-
-    return None
+# Re-export for backward compatibility (functions moved to session_discovery.py)
+__all__ = [
+    "AmplifierAgent",
+    "AmplifierAgentSession",
+    "discover_sessions",
+    "find_session_directory",
+    "AMPLIFIER_PROJECTS_DIR",
+]
 
 
 class AmplifierAgent(Agent):
