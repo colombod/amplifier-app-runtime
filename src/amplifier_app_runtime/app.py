@@ -34,6 +34,7 @@ from starlette.routing import Mount, Route
 from .routes import (
     event_routes,
     health_routes,
+    modules_routes,
     protocol_routes,
     session_routes,
     websocket_routes,
@@ -58,6 +59,9 @@ def create_app(*, use_protocol_routes: bool = True) -> Starlette:
 
     # Health routes are always at root (shared by both ACP and Amplifier)
     routes.extend(health_routes)
+
+    # Module discovery routes (also at root for easy access)
+    routes.extend(modules_routes)
 
     if acp_enabled:
         # =================================================================
