@@ -12,6 +12,7 @@ Key pattern from SDK examples:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -27,6 +28,7 @@ from acp import (  # type: ignore[import-untyped]
 )
 from acp.schema import (  # type: ignore[import-untyped]
     AgentCapabilities,
+    AgentPlanUpdate,
     AudioContentBlock,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
@@ -38,6 +40,7 @@ from acp.schema import (  # type: ignore[import-untyped]
     McpCapabilities,
     McpServerStdio,
     NewSessionResponse,
+    PlanEntry,
     PromptCapabilities,
     PromptResponse,
     ResourceContentBlock,
@@ -50,6 +53,18 @@ from acp.schema import (  # type: ignore[import-untyped]
     ToolCallUpdate,
 )
 
+from .session_discovery import (
+    AMPLIFIER_PROJECTS_DIR,
+    discover_sessions,
+    find_session_directory,
+)
+from .slash_commands import (
+    SlashCommandHandler,
+    SlashCommandRegistry,
+    create_available_commands_update,
+    parse_slash_command,
+)
+
 if TYPE_CHECKING:
     from ..session import ManagedSession
 
@@ -57,6 +72,16 @@ logger = logging.getLogger(__name__)
 
 # Default bundle when none specified
 DEFAULT_BUNDLE = "foundation"
+
+
+# Re-export for backward compatibility (functions moved to session_discovery.py)
+__all__ = [
+    "AmplifierAgent",
+    "AmplifierAgentSession",
+    "discover_sessions",
+    "find_session_directory",
+    "AMPLIFIER_PROJECTS_DIR",
+]
 
 
 class AmplifierAgent(Agent):
@@ -121,9 +146,9 @@ class AmplifierAgent(Agent):
                 loadSession=True,
                 mcpCapabilities=McpCapabilities(http=False, sse=True),
                 promptCapabilities=PromptCapabilities(
-                    audio=False,
-                    embeddedContext=True,
-                    image=False,
+                    audio=False,  # Not supported by Amplifier kernel
+                    embeddedContext=True,  # Supported
+                    image=True,  # Supported via context pre-population
                 ),
             ),
             authMethods=[],
@@ -180,8 +205,22 @@ class AmplifierAgent(Agent):
         session_id: str,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
-        """Load an existing session."""
-        # Check if we have it cached
+        """Load an existing session.
+
+        Attempts to load a session in the following order:
+        1. Check in-memory cache (already active sessions)
+        2. Try Amplifier's session manager
+        3. Try to find and load from filesystem storage
+
+        Args:
+            cwd: Working directory for the session.
+            mcp_servers: MCP servers to connect (currently unused).
+            session_id: The session ID to load.
+
+        Returns:
+            LoadSessionResponse if session found and loaded, None otherwise.
+        """
+        # Check if we have it cached (already active)
         if session_id in self._sessions:
             logger.info(f"Loaded cached ACP session: {session_id}")
             return LoadSessionResponse(
@@ -193,29 +232,77 @@ class AmplifierAgent(Agent):
                 ),
             )
 
-        # Try to load from Amplifier session manager
+        # Try to load from Amplifier session manager first
         from ..session import session_manager
 
         amplifier_session = await session_manager.get(session_id)
-        if not amplifier_session:
+
+        if amplifier_session:
+            # Wrap in our session type with client capabilities
+            session = AmplifierAgentSession(
+                session_id=session_id,
+                cwd=cwd,
+                bundle=DEFAULT_BUNDLE,
+                conn=self._conn,
+                client_capabilities=self._client_capabilities,
+            )
+            session._amplifier_session = amplifier_session
+            self._sessions[session_id] = session
+
+            # Register ACP tools for loaded session
+            await session._register_acp_tools()
+
+            logger.info(f"Loaded ACP session from manager: {session_id}")
+
+            return LoadSessionResponse(
+                modes=SessionModeState(
+                    availableModes=[
+                        SessionMode(id="default", name="Default", description="Default agent mode"),
+                    ],
+                    currentModeId="default",
+                ),
+            )
+
+        # Fallback: Try to find session in filesystem storage
+        session_dir = find_session_directory(session_id, cwd)
+        if not session_dir:
             logger.warning(f"Session not found: {session_id}")
             return None
 
-        # Wrap in our session type with client capabilities
+        # Load metadata to get session details
+        metadata_file = session_dir / "metadata.json"
+        bundle = DEFAULT_BUNDLE
+        session_cwd = cwd
+
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+                bundle = metadata.get("bundle") or DEFAULT_BUNDLE
+                session_cwd = metadata.get("cwd") or cwd
+                logger.info(
+                    f"Found session metadata: bundle={bundle}, cwd={session_cwd}, "
+                    f"turns={metadata.get('turn_count', 0)}"
+                )
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to read session metadata: {e}")
+
+        # Create a new session wrapper that will resume from the stored state
+        # The Amplifier session will be created fresh but can restore context
+        # from the events.jsonl file if needed
         session = AmplifierAgentSession(
             session_id=session_id,
-            cwd=cwd,
-            bundle=DEFAULT_BUNDLE,
+            cwd=session_cwd,
+            bundle=bundle,
             conn=self._conn,
             client_capabilities=self._client_capabilities,
         )
-        session._amplifier_session = amplifier_session
+
+        # Initialize with the session directory for potential state restoration
+        await session.initialize(session_dir=session_dir)
         self._sessions[session_id] = session
 
-        # Register ACP tools for loaded session
-        await session._register_acp_tools()
-
-        logger.info(f"Loaded ACP session: {session_id}")
+        logger.info(f"Loaded ACP session from filesystem: {session_id}")
 
         return LoadSessionResponse(
             modes=SessionModeState(
@@ -232,15 +319,49 @@ class AmplifierAgent(Agent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        """List available sessions."""
+        """List available sessions.
+
+        Discovers sessions from Amplifier's filesystem storage at
+        ~/.amplifier/projects/{encoded-path}/sessions/
+
+        Args:
+            cursor: Pagination cursor (not yet implemented).
+            cwd: If provided, only return sessions for this working directory.
+        """
         from acp.schema import ListSessionsResponse, SessionInfo  # type: ignore[import-untyped]
 
         sessions = []
+
+        # First, add any in-memory sessions (currently active)
         for sid, session in self._sessions.items():
             sessions.append(
                 SessionInfo(
                     sessionId=sid,
                     cwd=session.cwd,
+                    name=getattr(session, "name", None),
+                )
+            )
+
+        # Collect IDs of in-memory sessions to avoid duplicates
+        in_memory_ids = set(self._sessions.keys())
+
+        # Discover persisted sessions from filesystem
+        discovered = await discover_sessions(cwd=cwd, limit=50)
+
+        for session_data in discovered:
+            session_id = session_data["session_id"]
+
+            # Skip if already in memory or if it's a child session
+            if session_id in in_memory_ids:
+                continue
+            if session_data.get("is_child"):
+                continue  # Don't list child/spawned sessions
+
+            sessions.append(
+                SessionInfo(
+                    sessionId=session_id,
+                    cwd=session_data.get("cwd") or cwd or "",
+                    name=session_data.get("name"),
                 )
             )
 
@@ -274,13 +395,12 @@ class AmplifierAgent(Agent):
                     session_id,
                     update_agent_message(text_block(f"Error: Session not found: {session_id}")),
                 )
-            return PromptResponse(stopReason="error")
+            # Use "cancelled" for error cases - "error" is not a valid ACP stopReason
+            return PromptResponse(stopReason="cancelled")
 
-        # Extract text content
-        text_content = self._extract_text_content(prompt)
-
-        # Execute and stream
-        stop_reason = await session.execute_prompt(text_content)
+        # Pass full content blocks to session for multi-modal handling
+        # The session will handle conversion and context pre-population
+        stop_reason = await session.execute_prompt(prompt)
 
         return PromptResponse(stopReason=stop_reason)
 
@@ -424,12 +544,24 @@ class AmplifierAgentSession:
         self._amplifier_session: ManagedSession | None = None
         self._cancel_event = asyncio.Event()
         self._registered_acp_tools: list[str] = []
+        # Slash command handler for IDE commands
+        self._slash_handler: SlashCommandHandler | None = None
+        # ACP approval bridge for IDE permission dialogs
+        self._approval_bridge: Any | None = None
+        self._tool_tracker: Any | None = None
 
-    async def initialize(self) -> None:
-        """Initialize the underlying Amplifier session."""
+    async def initialize(self, session_dir: Path | None = None) -> None:
+        """Initialize the underlying Amplifier session.
+
+        Args:
+            session_dir: Optional path to existing session directory for restoration.
+                        If provided, the session will attempt to restore state from
+                        the stored events.jsonl file.
+        """
         from ..bundle_manager import BundleManager
         from ..session import SessionConfig, session_manager
         from ..transport.base import Event
+        from .approval_bridge import ACPApprovalBridge, ToolCallTracker
 
         # Load and prepare the bundle
         bundle_manager = BundleManager()
@@ -450,10 +582,21 @@ class AmplifierAgentSession:
             """Forward Amplifier events to ACP via conn.session_update()."""
             await self._on_event(event)
 
-        # Create Amplifier session
+        # Create ACP approval bridge for IDE permission dialogs
+        def get_client() -> Client | None:
+            return self._conn
+
+        self._approval_bridge = ACPApprovalBridge(
+            session_id=self.session_id,
+            get_client=get_client,
+        )
+        self._tool_tracker = ToolCallTracker
+
+        # Create Amplifier session with ACP approval bridge
         config = SessionConfig(
             bundle=self.bundle,
             working_directory=self.cwd,
+            approval_system=self._approval_bridge,
         )
         self._amplifier_session = await session_manager.create(
             config=config,
@@ -463,10 +606,21 @@ class AmplifierAgentSession:
 
         # Initialize with prepared bundle
         await self._amplifier_session.initialize(prepared_bundle=prepared_bundle)
+
+        # If restoring from existing session, try to restore context
+        if session_dir:
+            await self._restore_session_context(session_dir)
+
         logger.info(f"Amplifier session {self.session_id} initialized")
 
         # Register ACP client-side tools based on capabilities
         await self._register_acp_tools()
+
+        # Initialize slash command handler
+        self._slash_handler = SlashCommandHandler(self._amplifier_session)
+
+        # Send available commands to client
+        await self._send_available_commands()
 
     async def _register_acp_tools(self) -> None:
         """Register ACP client-side tools on this session.
@@ -506,20 +660,285 @@ class AmplifierAgentSession:
         except Exception as e:
             logger.warning(f"Failed to register ACP tools: {e}")
 
-    async def execute_prompt(self, content: str) -> str:
+    async def _restore_session_context(self, session_dir: Path) -> None:
+        """Restore session context from stored events.
+
+        This method reads the events.jsonl file and extracts conversation
+        history summary. Full context restoration requires Amplifier's
+        native session resumption mechanism.
+
+        Args:
+            session_dir: Path to the session directory containing events.jsonl.
+        """
+        events_file = session_dir / "events.jsonl"
+        if not events_file.exists():
+            logger.debug(f"No events.jsonl found in {session_dir}, starting fresh")
+            return
+
+        try:
+            # Count events and extract basic info for logging
+            turn_count = 0
+            last_prompt = None
+
+            with open(events_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("event", "")
+                    data = event.get("data", {})
+
+                    if event_type == "turn:start":
+                        turn_count += 1
+                        last_prompt = data.get("prompt", "")[:100]  # First 100 chars
+
+            if turn_count > 0:
+                logger.info(
+                    f"Session {self.session_id} has {turn_count} previous turns. "
+                    f"Last prompt: '{last_prompt}...'"
+                )
+                # Store turn count for potential use
+                self._previous_turn_count = turn_count
+
+        except Exception as e:
+            logger.warning(f"Failed to read session history: {e}")
+            # Continue anyway - session will work but without history awareness
+
+    async def _send_available_commands(self) -> None:
+        """Send available slash commands to the ACP client.
+
+        This advertises commands like /help, /mode, /tools to the IDE
+        for autocomplete and command palette integration.
+        """
+        if not self._conn:
+            return
+
+        try:
+            commands = SlashCommandRegistry.get_commands_for_session(self._amplifier_session)
+            update = create_available_commands_update(self._amplifier_session)
+            await self._conn.session_update(self.session_id, update)
+            logger.debug(f"Sent {len(commands)} available commands to session {self.session_id}")
+        except Exception as e:
+            logger.warning(f"Failed to send available commands: {e}")
+
+    # Supported image MIME types for multi-modal content
+    _SUPPORTED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+    def _convert_acp_to_amplifier_blocks(
+        self,
+        blocks: list[Any],
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
+        """Convert ACP content blocks to Amplifier format.
+
+        Args:
+            blocks: List of ACP content blocks (TextContentBlock, ImageContentBlock, etc.)
+
+        Returns:
+            amplifier_blocks: List of Amplifier-compatible content blocks
+            text_prompt: Extracted text to use as the prompt
+            warnings: List of warning messages for unsupported content
+        """
+        amplifier_blocks: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+        warnings: list[str] = []
+
+        for block in blocks:
+            # Handle TextContentBlock
+            if isinstance(block, TextContentBlock):
+                text_parts.append(block.text)
+                amplifier_blocks.append({"type": "text", "text": block.text})
+
+            # Handle dict-style text block
+            elif isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                text_parts.append(text)
+                amplifier_blocks.append({"type": "text", "text": text})
+
+            # Handle ImageContentBlock
+            elif isinstance(block, ImageContentBlock):
+                converted = self._convert_image_block(block)
+                if converted:
+                    amplifier_blocks.append(converted)
+                else:
+                    warnings.append(
+                        f"Unsupported image type: {getattr(block, 'mimeType', 'unknown')}. "
+                        f"Supported types: {', '.join(sorted(self._SUPPORTED_IMAGE_TYPES))}"
+                    )
+
+            # Handle AudioContentBlock (not supported)
+            elif isinstance(block, AudioContentBlock):
+                warnings.append("Audio content is not currently supported.")
+
+            # Handle EmbeddedResourceContentBlock
+            elif isinstance(block, EmbeddedResourceContentBlock):
+                converted = self._convert_embedded_resource(block)
+                if converted:
+                    amplifier_blocks.append(converted)
+                    # Also extract text for the prompt if it's a text resource
+                    if converted.get("type") == "text":
+                        text_parts.append(converted.get("text", ""))
+
+            # Handle ResourceContentBlock (external URI - not supported)
+            elif isinstance(block, ResourceContentBlock):
+                warnings.append(
+                    "External resource links cannot be fetched. Please embed content directly."
+                )
+
+            # Handle generic object with type attribute
+            elif hasattr(block, "type"):
+                block_type = getattr(block, "type", None)
+                if block_type == "text":
+                    text = getattr(block, "text", "")
+                    text_parts.append(text)
+                    amplifier_blocks.append({"type": "text", "text": text})
+                else:
+                    logger.debug(f"Skipping unsupported block type: {block_type}")
+
+        # Build text prompt from all text parts
+        text_prompt = "\n".join(text_parts).strip()
+
+        # If no text content after filtering, use fallback
+        if not text_prompt and not any(b.get("type") == "image" for b in amplifier_blocks):
+            text_prompt = "Please provide content with text or images."
+
+        return amplifier_blocks, text_prompt, warnings
+
+    def _convert_image_block(self, block: ImageContentBlock) -> dict[str, Any] | None:
+        """Convert ACP ImageContentBlock to Amplifier image format.
+
+        Args:
+            block: ACP ImageContentBlock with data and mimeType
+
+        Returns:
+            Amplifier image block format or None if unsupported type:
+            {"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}
+        """
+        # Get MIME type - handle both attribute styles
+        mime_type = getattr(block, "mimeType", None) or getattr(block, "mime_type", None)
+        if not mime_type:
+            return None
+
+        # Check if supported
+        if mime_type not in self._SUPPORTED_IMAGE_TYPES:
+            return None
+
+        # Get base64 data
+        data = getattr(block, "data", None)
+        if not data:
+            return None
+
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime_type,
+                "data": data,
+            },
+        }
+
+    def _convert_embedded_resource(
+        self, block: EmbeddedResourceContentBlock
+    ) -> dict[str, Any] | None:
+        """Convert embedded resource to text or image block.
+
+        Args:
+            block: ACP EmbeddedResourceContentBlock with resource data
+
+        Returns:
+            Amplifier-compatible block (text or image) or None if unsupported
+        """
+        resource = getattr(block, "resource", None)
+        if not resource:
+            return None
+
+        # Get URI for context
+        uri = getattr(resource, "uri", "") or ""
+
+        # Check if it's a text resource
+        text = getattr(resource, "text", None)
+        if text is not None:
+            # Include URI context if available
+            if uri:
+                return {"type": "text", "text": f"[Resource: {uri}]\n{text}"}
+            return {"type": "text", "text": text}
+
+        # Check if it's a blob resource (potentially an image)
+        blob = getattr(resource, "blob", None)
+        if blob:
+            mime_type = getattr(resource, "mimeType", None) or getattr(resource, "mime_type", None)
+            if mime_type and mime_type in self._SUPPORTED_IMAGE_TYPES:
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": blob,
+                    },
+                }
+
+        return None
+
+    async def execute_prompt(self, content: str | list[Any]) -> str:
         """Execute prompt and stream updates back via ACP.
 
-        Returns stop reason: 'end_turn', 'cancelled', or 'error'.
+        Handles three types of input:
+        1. String content (legacy) - works exactly as before
+        2. List of ACP content blocks - converts and handles multi-modal content
+        3. Slash commands (/help, /mode, etc.) - handled locally
+
+        For multi-modal content (images), the content is pre-populated into the
+        conversation context so the LLM can see it, then execution proceeds with
+        the text portion as the prompt.
+
+        Returns stop reason: 'end_turn' or 'cancelled'.
         """
         self._cancel_event.clear()
 
+        # Handle multi-modal content (list of ACP content blocks)
+        text_prompt: str
+        has_multimodal = False
+        warnings: list[str] = []
+
+        if isinstance(content, list):
+            # Convert ACP blocks to Amplifier format
+            amplifier_blocks, text_prompt, warnings = self._convert_acp_to_amplifier_blocks(content)
+
+            # Check if we have multi-modal content (images)
+            has_multimodal = any(b.get("type") == "image" for b in amplifier_blocks)
+
+            # Pre-populate context with multi-modal content if present
+            if has_multimodal and self._amplifier_session:
+                await self._prepopulate_multimodal_context(amplifier_blocks)
+        else:
+            # Legacy string content - use as-is
+            text_prompt = content
+
+        # Check for slash command (only on text prompts)
+        parsed = parse_slash_command(text_prompt)
+        if parsed and self._slash_handler:
+            return await self._execute_slash_command(parsed)
+
         if not self._amplifier_session:
             logger.error("Session not initialized")
-            return "error"
+            return "cancelled"  # "error" is not a valid ACP stopReason
+
+        # Inject warnings about unsupported content as system context
+        if warnings and self._conn:
+            warning_text = "Note: " + " ".join(warnings)
+            await self._conn.session_update(
+                self.session_id,
+                update_agent_message(text_block(warning_text)),
+            )
 
         try:
             # Execute and let the hook stream events
-            async for event in self._amplifier_session.execute(content):
+            async for event in self._amplifier_session.execute(text_prompt):
                 if self._cancel_event.is_set():
                     return "cancelled"
 
@@ -538,6 +957,127 @@ class AmplifierAgentSession:
                     self.session_id,
                     update_agent_message(text_block(f"Error: {e}")),
                 )
+            return "cancelled"  # "error" is not a valid ACP stopReason
+
+    async def _prepopulate_multimodal_context(self, amplifier_blocks: list[dict[str, Any]]) -> None:
+        """Pre-populate the conversation context with multi-modal content.
+
+        This adds a user message containing all content blocks (text + images)
+        to the conversation context before execution. The orchestrator will
+        see this message and include it in the LLM request.
+
+        Args:
+            amplifier_blocks: List of Amplifier-compatible content blocks
+        """
+        if not self._amplifier_session:
+            return
+
+        try:
+            # Get context manager from the internal AmplifierSession
+            # ManagedSession wraps AmplifierSession in _amplifier_session attribute
+            amplifier_session = getattr(self._amplifier_session, "_amplifier_session", None)
+            if not amplifier_session:
+                logger.warning("Internal AmplifierSession not available")
+                return
+
+            coordinator = getattr(amplifier_session, "coordinator", None)
+            if not coordinator:
+                logger.warning("Coordinator not available for multi-modal pre-population")
+                return
+
+            context = coordinator.get("context")
+            if context is None:
+                logger.warning("Context manager not available for multi-modal pre-population")
+                return
+
+            # Add user message with multi-modal content
+            await context.add_message({"role": "user", "content": amplifier_blocks})
+            logger.debug(f"Pre-populated context with {len(amplifier_blocks)} content blocks")
+
+        except Exception as e:
+            logger.warning(f"Failed to pre-populate multi-modal context: {e}")
+
+    async def _execute_slash_command(self, parsed: Any) -> str:
+        """Execute a slash command and send result to client.
+
+        Args:
+            parsed: ParsedCommand from parse_slash_command()
+
+        Returns:
+            Stop reason: 'end_turn' or 'error'
+        """
+        if not self._slash_handler:
+            logger.error("Slash handler not initialized")
+            return "error"
+
+        try:
+            result = await self._slash_handler.execute(parsed)
+
+            # If command returns a prompt to execute through Amplifier
+            # This is the correct pattern for commands that need tool invocation
+            # with full context and orchestration (e.g., recipes)
+            if result.execute_as_prompt:
+                logger.info(f"Slash command /{parsed.name} translating to Amplifier prompt")
+                return await self._execute_amplifier_prompt(result.execute_as_prompt)
+
+            # Send result as agent message (for direct responses)
+            if result.send_as_message and self._conn:
+                await self._conn.session_update(
+                    self.session_id,
+                    update_agent_message(text_block(result.message)),
+                )
+
+            # If command changed state, send updated commands list
+            if result.update_commands:
+                await self._send_available_commands()
+
+            return "end_turn" if result.success else "error"
+
+        except Exception as e:
+            logger.exception(f"Error executing slash command: {e}")
+            if self._conn:
+                await self._conn.session_update(
+                    self.session_id,
+                    update_agent_message(text_block(f"Error: {e}")),
+                )
+            return "error"
+
+    async def _execute_amplifier_prompt(self, prompt: str) -> str:
+        """Execute a prompt through Amplifier's normal flow.
+
+        This is used when slash commands need full orchestration,
+        such as recipe execution which requires proper context,
+        tool invocation, and event streaming.
+
+        Args:
+            prompt: The prompt to execute through Amplifier
+
+        Returns:
+            Stop reason from execution
+        """
+        if not self._amplifier_session:
+            logger.error("Session not initialized for prompt execution")
+            return "error"
+
+        try:
+            # Execute through Amplifier's normal flow
+            # This ensures proper orchestration, context, and tool invocation
+            async for event in self._amplifier_session.execute(prompt):
+                if self._cancel_event.is_set():
+                    return "cancelled"
+                await self._on_event(event)
+
+            return "end_turn"
+
+        except asyncio.CancelledError:
+            return "cancelled"
+        except Exception as e:
+            logger.exception(f"Error executing Amplifier prompt: {e}")
+            if self._conn:
+                await self._conn.session_update(
+                    self.session_id,
+                    update_agent_message(text_block(f"Error: {e}")),
+                )
             return "error"
 
     async def _on_event(self, event: Any) -> None:
@@ -548,6 +1088,14 @@ class AmplifierAgentSession:
 
         Uses the SDK's session_update() method which properly formats
         and sends the notification.
+
+        ACP Protocol Mapping:
+        - tool:pre -> ToolCallStart (sessionUpdate="tool_call")
+        - tool:post -> ToolCallUpdate with status="completed"
+        - tool:error -> ToolCallUpdate with status="failed"
+        - todo:update -> AgentPlanUpdate (sessionUpdate="plan")
+        - content_block:* -> update_agent_message
+        - thinking:* -> update_agent_thought
         """
         if not self._conn:
             return
@@ -595,39 +1143,65 @@ class AmplifierAgentSession:
                     )
 
             elif event_type == "tool:pre":
-                # Tool call starting
+                # Tool call starting - ACP ToolCallStart
                 tool_info = props.get("tool", {})
                 tool_name = (
                     tool_info.get("name", "") if isinstance(tool_info, dict) else str(tool_info)
                 )
+                tool_call_id = props.get("call_id", "")
+                arguments = props.get("arguments", {})
+
+                # Track tool call for approval context (so ACPApprovalBridge
+                # can include tool info in permission requests)
+                if self._tool_tracker:
+                    self._tool_tracker.track(tool_call_id, tool_name, arguments)
+
+                # Generate human-readable title from tool name
+                title = self._generate_tool_title(tool_name, arguments)
+
+                # Infer tool kind from name
+                kind = self._infer_tool_kind(tool_name)
 
                 update = ToolCallStart(
-                    sessionUpdate="tool_call",
-                    id=props.get("call_id", ""),
-                    name=tool_name,
-                    input=props.get("arguments", {}),
+                    session_update="tool_call",
+                    tool_call_id=tool_call_id,
+                    title=title,
+                    kind=kind,
+                    status="pending",
+                    raw_input=arguments,
                 )
                 await self._conn.session_update(self.session_id, update)
 
             elif event_type == "tool:post":
-                # Tool call completed
+                # Tool call completed - ACP ToolCallUpdate
+                # Clear tool tracking context
+                if self._tool_tracker:
+                    self._tool_tracker.clear()
+
                 update = ToolCallUpdate(
-                    sessionUpdate="tool_call_update",
-                    id=props.get("call_id", ""),
+                    tool_call_id=props.get("call_id", ""),
                     status="completed",
-                    output=props.get("result"),
+                    raw_output=props.get("result"),
                 )
                 await self._conn.session_update(self.session_id, update)
 
             elif event_type == "tool:error":
-                # Tool call failed
+                # Tool call failed - ACP ToolCallUpdate with status="failed"
+                # Clear tool tracking context
+                if self._tool_tracker:
+                    self._tool_tracker.clear()
+
+                error_info = props.get("error", "Unknown error")
                 update = ToolCallUpdate(
-                    sessionUpdate="tool_call_update",
-                    id=props.get("call_id", ""),
-                    status="error",
-                    error=props.get("error"),
+                    tool_call_id=props.get("call_id", ""),
+                    status="failed",
+                    raw_output={"error": str(error_info)},
                 )
                 await self._conn.session_update(self.session_id, update)
+
+            elif event_type == "todo:update":
+                # Todo list update - map to ACP AgentPlanUpdate
+                await self._handle_todo_update(props)
 
             elif event_type in ("thinking:delta", "thinking:final", "thinking:start"):
                 # Thinking/reasoning content
@@ -655,6 +1229,115 @@ class AmplifierAgentSession:
 
         except Exception as e:
             logger.warning(f"Error sending event {event_type}: {e}")
+
+    def _generate_tool_title(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Generate a human-readable title for a tool call.
+
+        Maps common tool names to descriptive titles, optionally incorporating
+        key argument values for context.
+        """
+        # Tool-specific title generation
+        title_map = {
+            "read_file": lambda args: f"Reading {args.get('file_path', 'file')}",
+            "write_file": lambda args: f"Writing {args.get('file_path', 'file')}",
+            "edit_file": lambda args: f"Editing {args.get('file_path', 'file')}",
+            "glob": lambda args: f"Finding files: {args.get('pattern', '*')}",
+            "grep": lambda args: f"Searching for: {args.get('pattern', '...')}",
+            "bash": lambda args: "Running command",
+            "web_fetch": lambda args: f"Fetching {args.get('url', 'URL')}",
+            "web_search": lambda args: f"Searching: {args.get('query', '...')}",
+            "task": lambda args: f"Delegating to {args.get('agent', 'agent')}",
+            "todo": lambda args: "Updating task list",
+            "recipes": lambda args: f"Running recipe: {args.get('operation', 'operation')}",
+            "python_check": lambda args: "Checking Python code",
+        }
+
+        if tool_name in title_map:
+            try:
+                return title_map[tool_name](arguments)
+            except Exception:
+                pass
+
+        # Default: humanize the tool name
+        return tool_name.replace("_", " ").title()
+
+    def _infer_tool_kind(self, tool_name: str) -> str:
+        """Infer the ACP tool kind from the tool name.
+
+        ACP tool kinds: read, edit, delete, move, search, execute, think, fetch, other
+        """
+        # Map tool names to ACP kinds
+        kind_map = {
+            # Read operations
+            "read_file": "read",
+            "glob": "read",
+            "load_skill": "read",
+            # Edit operations
+            "write_file": "edit",
+            "edit_file": "edit",
+            # Search operations
+            "grep": "search",
+            "web_search": "search",
+            # Execute operations
+            "bash": "execute",
+            "python_check": "execute",
+            "recipes": "execute",
+            # Fetch operations
+            "web_fetch": "fetch",
+            # Think/plan operations
+            "todo": "think",
+            "task": "think",
+        }
+
+        return kind_map.get(tool_name, "other")
+
+    async def _handle_todo_update(self, props: dict[str, Any]) -> None:
+        """Convert Amplifier todo:update event to ACP AgentPlanUpdate.
+
+        Maps Amplifier todo statuses to ACP plan entry statuses:
+        - pending -> pending
+        - in_progress -> in_progress
+        - completed -> completed
+
+        Maps Amplifier priorities (if present) or defaults to medium.
+        """
+        if not self._conn:
+            return
+
+        todos = props.get("todos", [])
+        if not todos:
+            return
+
+        # Convert todos to ACP PlanEntry format
+        entries = []
+        for todo in todos:
+            # Map status
+            status = todo.get("status", "pending")
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+
+            # Map priority (default to medium if not specified)
+            priority = todo.get("priority", "medium")
+            if priority not in ("high", "medium", "low"):
+                priority = "medium"
+
+            # Get content - use content field or activeForm as fallback
+            content = todo.get("content", "") or todo.get("activeForm", "Task")
+
+            entries.append(
+                PlanEntry(
+                    content=content,
+                    priority=priority,
+                    status=status,
+                )
+            )
+
+        # Send plan update
+        update = AgentPlanUpdate(
+            session_update="plan",
+            entries=entries,
+        )
+        await self._conn.session_update(self.session_id, update)
 
     async def cancel(self) -> None:
         """Cancel ongoing execution."""

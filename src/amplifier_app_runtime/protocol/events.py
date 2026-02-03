@@ -58,6 +58,22 @@ class EventType(str, Enum):
     AGENT_SPAWNED = "agent.spawned"
     AGENT_COMPLETED = "agent.completed"
 
+    # Configuration events
+    CONFIG_INIT_STARTED = "config.init.started"
+    CONFIG_INIT_PROVIDER_DETECTED = "config.init.provider_detected"
+    CONFIG_INIT_BUNDLE_SET = "config.init.bundle_set"
+    CONFIG_INIT_COMPLETED = "config.init.completed"
+
+    # Bundle management events
+    BUNDLE_INSTALL_STARTED = "bundle.install.started"
+    BUNDLE_INSTALL_PROGRESS = "bundle.install.progress"
+    BUNDLE_INSTALL_COMPLETED = "bundle.install.completed"
+    BUNDLE_INSTALL_ERROR = "bundle.install.error"
+
+    # Session reset events
+    SESSION_RESET_STARTED = "session.reset.started"
+    SESSION_RESET_COMPLETED = "session.reset.completed"
+
     # Server events (uncorrelated)
     CONNECTED = "connected"
     PING = "pong"  # Response to ping

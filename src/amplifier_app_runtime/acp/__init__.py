@@ -39,7 +39,33 @@ from acp.schema import (  # type: ignore[import-untyped]
 )
 
 from .agent import AmplifierAgent, AmplifierAgentSession, run_stdio_agent
+from .content_converter import AcpToAmplifierContentConverter, ConversionResult
+from .event_mapper import AmplifierToAcpEventMapper, EventMapResult
+from .protocols import (
+    ACPConnectionProtocol,
+    AmplifierSessionProtocol,
+    ContentConverterProtocol,
+    EventMapperProtocol,
+    ManagedSessionProtocol,
+    SlashCommandHandlerProtocol,
+    ToolTrackerProtocol,
+)
 from .routes import acp_routes, run_acp_stdio
+from .session_discovery import (
+    AMPLIFIER_PROJECTS_DIR,
+    decode_project_path,
+    discover_sessions,
+    encode_project_path,
+    find_session_directory,
+)
+from .tool_metadata import (
+    TOOL_METADATA,
+    ToolMeta,
+    get_tool_category,
+    get_tool_kind,
+    get_tool_title,
+    register_tool_metadata,
+)
 from .transport import (
     AcpTransport,
     HttpAcpTransport,
@@ -104,4 +130,31 @@ __all__ = [
     "SessionModeState",
     "SetSessionModeRequest",
     "SetSessionModeResponse",
+    # Content Converter (extracted module)
+    "AcpToAmplifierContentConverter",
+    "ConversionResult",
+    # Event Mapper (extracted module)
+    "AmplifierToAcpEventMapper",
+    "EventMapResult",
+    # Protocols (type safety)
+    "ACPConnectionProtocol",
+    "AmplifierSessionProtocol",
+    "ContentConverterProtocol",
+    "EventMapperProtocol",
+    "ManagedSessionProtocol",
+    "SlashCommandHandlerProtocol",
+    "ToolTrackerProtocol",
+    # Session Discovery (extracted module)
+    "AMPLIFIER_PROJECTS_DIR",
+    "decode_project_path",
+    "discover_sessions",
+    "encode_project_path",
+    "find_session_directory",
+    # Tool Metadata (shared module)
+    "TOOL_METADATA",
+    "ToolMeta",
+    "get_tool_category",
+    "get_tool_kind",
+    "get_tool_title",
+    "register_tool_metadata",
 ]

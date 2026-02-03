@@ -2,6 +2,10 @@
 
 Tests the ide_terminal, ide_read_file, and ide_write_file tools
 that execute operations on the IDE's machine via ACP protocol.
+
+Updated to use Amplifier's ToolResult format:
+- error: dict[str, Any] | None with {"message": "...", "type": "..."}
+- get_schema() method instead of parameters/input_schema properties
 """
 
 from __future__ import annotations
@@ -296,8 +300,10 @@ class TestIdeTerminalTool:
         result = await tool.execute({"command": "echo", "args": ["hello"]})
 
         assert result.success is True
-        assert "echo" in result.output
-        assert result.metadata["exit_code"] == 0
+        # Output is now a structured dict with Amplifier ToolResult format
+        assert isinstance(result.output, dict)
+        assert "echo" in result.output["output"]
+        assert result.output["exit_code"] == 0
 
         # Verify protocol flow
         assert len(mock_client.create_terminal_calls) == 1
@@ -339,7 +345,10 @@ class TestIdeTerminalTool:
         result = await tool.execute({"command": "echo"})
 
         assert result.success is False
-        assert "not connected" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "not connected" in result.error["message"].lower()
+        assert result.error["type"] == "ConnectionError"
 
     @pytest.mark.asyncio
     async def test_execute_missing_command(
@@ -349,7 +358,10 @@ class TestIdeTerminalTool:
         result = await tool.execute({})
 
         assert result.success is False
-        assert "required" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "required" in result.error["message"].lower()
+        assert result.error["type"] == "ValidationError"
 
     @pytest.mark.asyncio
     async def test_terminal_always_released(
@@ -377,12 +389,12 @@ class TestIdeTerminalTool:
         assert "client" in tool.description.lower() or "user" in tool.description.lower()
 
     @pytest.mark.asyncio
-    async def test_parameters_schema(self, tool: IdeTerminalTool) -> None:
-        """Test that parameters schema is correct."""
-        params = tool.parameters
-        assert params["type"] == "object"
-        assert "command" in params["properties"]
-        assert "command" in params["required"]
+    async def test_get_schema(self, tool: IdeTerminalTool) -> None:
+        """Test that get_schema() returns correct schema (Amplifier convention)."""
+        schema = tool.get_schema()
+        assert schema["type"] == "object"
+        assert "command" in schema["properties"]
+        assert "command" in schema["required"]
 
 
 # ============================================================================
@@ -441,7 +453,10 @@ class TestIdeReadFileTool:
         result = await tool.execute({"path": "/some/file"})
 
         assert result.success is False
-        assert "not connected" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "not connected" in result.error["message"].lower()
+        assert result.error["type"] == "ConnectionError"
 
     @pytest.mark.asyncio
     async def test_read_missing_path(
@@ -451,7 +466,10 @@ class TestIdeReadFileTool:
         result = await tool.execute({})
 
         assert result.success is False
-        assert "required" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "required" in result.error["message"].lower()
+        assert result.error["type"] == "ValidationError"
 
     @pytest.mark.asyncio
     async def test_tool_has_correct_metadata(self, tool: IdeReadFileTool) -> None:
@@ -491,7 +509,8 @@ class TestIdeWriteFileTool:
 
         assert result.success is True
         assert mock_client.disk_files["/home/user/new_file.txt"] == "new content"
-        assert result.metadata["bytes_written"] == len("new content")
+        # Output is now a string message, not structured with metadata
+        assert "11" in result.output or "bytes" in result.output.lower()
 
     @pytest.mark.asyncio
     async def test_write_no_client(self) -> None:
@@ -504,7 +523,10 @@ class TestIdeWriteFileTool:
         result = await tool.execute({"path": "/some/file", "content": "test"})
 
         assert result.success is False
-        assert "not connected" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "not connected" in result.error["message"].lower()
+        assert result.error["type"] == "ConnectionError"
 
     @pytest.mark.asyncio
     async def test_write_missing_path(
@@ -514,7 +536,10 @@ class TestIdeWriteFileTool:
         result = await tool.execute({"content": "test"})
 
         assert result.success is False
-        assert "required" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "required" in result.error["message"].lower()
+        assert result.error["type"] == "ValidationError"
 
     @pytest.mark.asyncio
     async def test_write_missing_content(
@@ -524,7 +549,10 @@ class TestIdeWriteFileTool:
         result = await tool.execute({"path": "/some/file"})
 
         assert result.success is False
-        assert "required" in result.error.lower()
+        # Error is now a dict with Amplifier ToolResult format
+        assert isinstance(result.error, dict)
+        assert "required" in result.error["message"].lower()
+        assert result.error["type"] == "ValidationError"
 
 
 # ============================================================================

@@ -73,6 +73,8 @@ class SessionConfig:
     behaviors: list[str] = field(default_factory=list)
     show_thinking: bool = True
     environment: dict[str, str] = field(default_factory=dict)
+    # Optional custom approval system (e.g., ACPApprovalBridge for IDE integration)
+    approval_system: Any | None = None
 
 
 class ManagedSession:
@@ -147,7 +149,11 @@ class ManagedSession:
 
             try:
                 # Create protocol handlers
-                self._approval = ServerApprovalSystem(send_fn=self._send)
+                # Use custom approval system if provided (e.g., ACPApprovalBridge for IDE)
+                if self.config.approval_system is not None:
+                    self._approval = self.config.approval_system
+                else:
+                    self._approval = ServerApprovalSystem(send_fn=self._send)
                 self._display = ServerDisplaySystem(send_fn=self._send)
                 self._streaming_hook = ServerStreamingHook(
                     send_fn=self._send,
@@ -434,26 +440,16 @@ class ManagedSession:
     async def _execute_with_amplifier(self, prompt: str) -> AsyncIterator[Event]:
         """Execute prompt using real Amplifier session.
 
-        The streaming hook is already registered and will forward events
-        to the client via send_fn. We just need to run execute() and
-        also yield events from here for the handler to process.
+        Uses the streaming hook's event queue to yield ALL events
+        (thinking, tools, content, etc.) as they occur during execution.
         """
-        try:
-            # Execute via AmplifierSession
-            # Events are forwarded via the streaming hook, but we also
-            # need to yield events for the handler to track
+        if not self._streaming_hook:
+            logger.warning("No streaming hook configured, events will be limited")
             result = await self._amplifier_session.execute(prompt)
-
-            # The streaming hook handles content_block events during execution
-            # Here we just yield the final result info
             if result:
                 yield Event(
                     type="content_block:start",
-                    properties={
-                        "session_id": self.session_id,
-                        "block_type": "text",
-                        "index": 0,
-                    },
+                    properties={"session_id": self.session_id, "block_type": "text", "index": 0},
                 )
                 yield Event(
                     type="content_block:end",
@@ -463,9 +459,47 @@ class ManagedSession:
                         "block": {"text": str(result)},
                     },
                 )
+            return
 
+        # Start streaming mode - hook will queue events
+        self._streaming_hook.start_streaming()
+
+        # Run execution in background task
+        async def run_execute():
+            try:
+                return await self._amplifier_session.execute(prompt)
+            finally:
+                # Signal end of streaming
+                self._streaming_hook.stop_streaming()
+
+        exec_task = asyncio.create_task(run_execute())
+
+        try:
+            # Yield events as they arrive from the hook
+            async for event in self._streaming_hook.get_events():
+                yield event
+
+            # Wait for execution to complete
+            result = await exec_task
+
+            # Log result for debugging (content already streamed via events)
+            if result:
+                logger.debug(f"Execution completed with result: {str(result)[:100]}...")
+
+        except asyncio.CancelledError:
+            exec_task.cancel()
+            try:
+                await exec_task
+            except asyncio.CancelledError:
+                pass
+            raise
         except Exception as e:
             logger.error(f"Execution error in session {self.session_id}: {e}")
+            exec_task.cancel()
+            try:
+                await exec_task
+            except asyncio.CancelledError:
+                pass
             raise
 
     async def cancel(self) -> None:

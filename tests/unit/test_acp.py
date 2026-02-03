@@ -1,4 +1,8 @@
-"""Tests for Agent Client Protocol (ACP) implementation."""
+"""Tests for Agent Client Protocol (ACP) implementation.
+
+Updated to use the official ACP SDK types. Some tests have been updated
+to reflect the new type structure from agent-client-protocol SDK.
+"""
 
 from __future__ import annotations
 
@@ -10,35 +14,28 @@ import pytest
 from amplifier_app_runtime.acp import (
     PROTOCOL_VERSION,
     AgentCapabilities,
-    AgentInfo,
     ClientCapabilities,
-    ClientInfo,
+    Implementation,
     InitializeRequest,
     InitializeResponse,
-    JsonRpcError,
-    JsonRpcNotification,
-    JsonRpcRequest,
-    JsonRpcResponse,
     NewSessionRequest,
     NewSessionResponse,
     PromptRequest,
     PromptResponse,
     SessionMode,
-    SessionModes,
-    SessionUpdate,
-    SessionUpdateType,
-    StopReason,
-    TextContent,
-    ToolCall,
-    ToolCallStatus,
+    SessionModeState,
+    TextContentBlock,
 )
 from amplifier_app_runtime.acp.transport import (
     HttpAcpTransport,
+    JsonRpcError,
+    JsonRpcErrorCode,
+    JsonRpcNotification,
     JsonRpcProcessor,
     JsonRpcProtocolError,
+    JsonRpcResponse,
     WebSocketAcpTransport,
 )
-from amplifier_app_runtime.acp.types import JsonRpcErrorCode
 
 # =============================================================================
 # JSON-RPC Types Tests
@@ -47,20 +44,6 @@ from amplifier_app_runtime.acp.types import JsonRpcErrorCode
 
 class TestJsonRpcTypes:
     """Tests for JSON-RPC 2.0 types."""
-
-    def test_request_serialization(self) -> None:
-        """Request serializes to valid JSON-RPC 2.0."""
-        request = JsonRpcRequest(
-            id="req_1",
-            method="initialize",
-            params={"protocolVersion": PROTOCOL_VERSION},
-        )
-        data = json.loads(request.model_dump_json())
-
-        assert data["jsonrpc"] == "2.0"
-        assert data["id"] == "req_1"
-        assert data["method"] == "initialize"
-        assert data["params"]["protocolVersion"] == PROTOCOL_VERSION
 
     def test_response_with_result(self) -> None:
         """Response with result serializes correctly."""
@@ -110,28 +93,30 @@ class TestJsonRpcTypes:
 
 
 class TestAcpTypes:
-    """Tests for ACP-specific types."""
+    """Tests for ACP-specific types from the official SDK."""
 
     def test_initialize_request(self) -> None:
         """InitializeRequest serializes with camelCase."""
+        # Using Implementation instead of ClientInfo (SDK change)
         request = InitializeRequest(
             protocolVersion=PROTOCOL_VERSION,
-            clientInfo=ClientInfo(name="test-client", version="1.0.0"),
+            clientInfo=Implementation(name="test-client", version="1.0.0"),
             clientCapabilities=ClientCapabilities(),
         )
-        data = request.model_dump(exclude_none=True)
+        data = request.model_dump(exclude_none=True, by_alias=True)
 
         assert data["protocolVersion"] == PROTOCOL_VERSION
         assert data["clientInfo"]["name"] == "test-client"
 
     def test_initialize_response(self) -> None:
         """InitializeResponse includes agent capabilities."""
+        # Using Implementation instead of AgentInfo (SDK change)
         response = InitializeResponse(
             protocolVersion=PROTOCOL_VERSION,
-            agentInfo=AgentInfo(name="amplifier-runtime", version="0.1.0"),
+            agentInfo=Implementation(name="amplifier-runtime", version="0.1.0"),
             agentCapabilities=AgentCapabilities(loadSession=True),
         )
-        data = response.model_dump(exclude_none=True)
+        data = response.model_dump(exclude_none=True, by_alias=True)
 
         assert data["protocolVersion"] == PROTOCOL_VERSION
         assert data["agentInfo"]["name"] == "amplifier-runtime"
@@ -139,35 +124,39 @@ class TestAcpTypes:
 
     def test_new_session_request(self) -> None:
         """NewSessionRequest includes working directory."""
-        request = NewSessionRequest(cwd="/home/user/project")
-        data = request.model_dump(exclude_none=True)
+        # mcp_servers is required in the SDK
+        request = NewSessionRequest(cwd="/home/user/project", mcp_servers=[])
+        data = request.model_dump(exclude_none=True, by_alias=True)
 
         assert data["cwd"] == "/home/user/project"
+        assert data["mcpServers"] == []
 
     def test_new_session_response(self) -> None:
         """NewSessionResponse includes session ID and modes."""
+        # SessionModeState uses snake_case field names internally
         response = NewSessionResponse(
-            sessionId="acp_123456",
-            modes=SessionModes(
-                availableModes=[
+            session_id="acp_123456",
+            modes=SessionModeState(
+                available_modes=[
                     SessionMode(id="default", name="Default"),
                 ],
-                currentMode="default",
+                current_mode_id="default",
             ),
         )
-        data = response.model_dump(exclude_none=True)
+        data = response.model_dump(exclude_none=True, by_alias=True)
 
         assert data["sessionId"] == "acp_123456"
         assert len(data["modes"]["availableModes"]) == 1
-        assert data["modes"]["currentMode"] == "default"
+        assert data["modes"]["currentModeId"] == "default"
 
     def test_prompt_request(self) -> None:
         """PromptRequest includes content blocks."""
+        # TextContentBlock replaces TextContent in the SDK
         request = PromptRequest(
             sessionId="acp_123456",
-            prompt=[TextContent(text="Hello, world!")],
+            prompt=[TextContentBlock(type="text", text="Hello, world!")],
         )
-        data = request.model_dump(exclude_none=True)
+        data = request.model_dump(exclude_none=True, by_alias=True)
 
         assert data["sessionId"] == "acp_123456"
         assert len(data["prompt"]) == 1
@@ -176,37 +165,11 @@ class TestAcpTypes:
 
     def test_prompt_response(self) -> None:
         """PromptResponse includes stop reason."""
-        response = PromptResponse(stopReason=StopReason.END_TURN)
-        data = response.model_dump(exclude_none=True)
+        # StopReason is a Literal type, use string value directly
+        response = PromptResponse(stopReason="end_turn")
+        data = response.model_dump(exclude_none=True, by_alias=True)
 
         assert data["stopReason"] == "end_turn"
-
-    def test_session_update(self) -> None:
-        """SessionUpdate notification structure."""
-        update = SessionUpdate(
-            sessionId="acp_123456",
-            type=SessionUpdateType.AGENT_MESSAGE_CHUNK,
-            data={"content": [{"type": "text", "text": "Hello"}]},
-        )
-        data = update.model_dump(exclude_none=True)
-
-        assert data["sessionId"] == "acp_123456"
-        assert data["type"] == "agent_message_chunk"
-        assert data["data"]["content"][0]["text"] == "Hello"
-
-    def test_tool_call(self) -> None:
-        """ToolCall includes status."""
-        tool_call = ToolCall(
-            id="tc_123",
-            name="read_file",
-            arguments={"path": "/tmp/test.txt"},
-            status=ToolCallStatus.RUNNING,
-        )
-        data = tool_call.model_dump(exclude_none=True)
-
-        assert data["id"] == "tc_123"
-        assert data["name"] == "read_file"
-        assert data["status"] == "running"
 
 
 # =============================================================================
@@ -464,36 +427,40 @@ class TestWebSocketAcpTransport:
 class TestContentTypes:
     """Tests for ACP content types."""
 
-    def test_text_content(self) -> None:
-        """TextContent serializes correctly."""
-        content = TextContent(text="Hello, world!")
-        data = content.model_dump()
+    def test_text_content_block(self) -> None:
+        """TextContentBlock serializes correctly."""
+        content = TextContentBlock(type="text", text="Hello, world!")
+        data = content.model_dump(by_alias=True)
 
         assert data["type"] == "text"
         assert data["text"] == "Hello, world!"
 
-    def test_stop_reason_enum(self) -> None:
-        """StopReason enum values match protocol."""
-        assert StopReason.END_TURN.value == "end_turn"
-        assert StopReason.MAX_TOKENS.value == "max_tokens"
-        assert StopReason.TOOL_USE.value == "tool_use"
-        assert StopReason.CANCELLED.value == "cancelled"
-        assert StopReason.ERROR.value == "error"
+    def test_stop_reason_values(self) -> None:
+        """StopReason Literal type accepts valid values."""
+        # StopReason is a Literal type, not an enum
+        # Valid values: 'end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'
+        response1 = PromptResponse(stopReason="end_turn")
+        response2 = PromptResponse(stopReason="max_tokens")
+        response3 = PromptResponse(stopReason="cancelled")
 
-    def test_tool_call_status_enum(self) -> None:
-        """ToolCallStatus enum values match protocol."""
-        assert ToolCallStatus.PENDING.value == "pending"
-        assert ToolCallStatus.RUNNING.value == "running"
-        assert ToolCallStatus.COMPLETED.value == "completed"
-        assert ToolCallStatus.FAILED.value == "failed"
-        assert ToolCallStatus.CANCELLED.value == "cancelled"
+        assert response1.stopReason == "end_turn"
+        assert response2.stopReason == "max_tokens"
+        assert response3.stopReason == "cancelled"
 
-    def test_session_update_type_enum(self) -> None:
-        """SessionUpdateType enum values match protocol."""
-        assert SessionUpdateType.AGENT_MESSAGE_CHUNK.value == "agent_message_chunk"
-        assert SessionUpdateType.TOOL_CALL_START.value == "tool_call_start"
-        assert SessionUpdateType.TOOL_CALL_END.value == "tool_call_end"
-        assert SessionUpdateType.THOUGHT_CHUNK.value == "thought_chunk"
+    def test_tool_call_status_values(self) -> None:
+        """ToolCallStatus Literal type accepts valid values."""
+        # ToolCallStatus is a Literal type: 'pending', 'in_progress', 'completed', 'failed'
+        from amplifier_app_runtime.acp import ToolCallStart
+
+        # ToolCallStart requires title, tool_call_id, and session_update='tool_call'
+        tc = ToolCallStart(
+            title="Reading file",
+            tool_call_id="tc_123",
+            session_update="tool_call",
+            status="pending",
+        )
+        assert tc.tool_call_id == "tc_123"
+        assert tc.status == "pending"
 
 
 # =============================================================================
@@ -504,11 +471,275 @@ class TestContentTypes:
 class TestProtocolVersion:
     """Tests for protocol version handling."""
 
-    def test_protocol_version_format(self) -> None:
-        """Protocol version follows date format."""
-        # Should be in YYYY-MM-DD format
-        parts = PROTOCOL_VERSION.split("-")
-        assert len(parts) == 3
-        assert len(parts[0]) == 4  # Year
-        assert len(parts[1]) == 2  # Month
-        assert len(parts[2]) == 2  # Day
+    def test_protocol_version_is_integer(self) -> None:
+        """Protocol version is an integer (ACP SDK v1)."""
+        # PROTOCOL_VERSION is an int in the current SDK
+        assert isinstance(PROTOCOL_VERSION, int)
+        assert PROTOCOL_VERSION >= 1
+
+
+# =============================================================================
+# ACP Event Mapping Tests
+# =============================================================================
+
+
+class TestToolTitleGeneration:
+    """Tests for tool title generation in ACP agent."""
+
+    def test_read_file_title(self) -> None:
+        """Read file tool generates descriptive title."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        title = session._generate_tool_title("read_file", {"file_path": "/tmp/test.py"})
+        assert "Reading" in title
+        assert "/tmp/test.py" in title
+
+    def test_write_file_title(self) -> None:
+        """Write file tool generates descriptive title."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        title = session._generate_tool_title("write_file", {"file_path": "/tmp/output.txt"})
+        assert "Writing" in title
+        assert "/tmp/output.txt" in title
+
+    def test_bash_title(self) -> None:
+        """Bash tool generates generic title."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        title = session._generate_tool_title("bash", {"command": "ls -la"})
+        assert title == "Running command"
+
+    def test_unknown_tool_title(self) -> None:
+        """Unknown tools get humanized title."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        title = session._generate_tool_title("my_custom_tool", {})
+        assert title == "My Custom Tool"
+
+
+class TestToolKindInference:
+    """Tests for inferring ACP tool kind from tool name."""
+
+    def test_read_operations(self) -> None:
+        """Read tools map to 'read' kind."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        assert session._infer_tool_kind("read_file") == "read"
+        assert session._infer_tool_kind("glob") == "read"
+        assert session._infer_tool_kind("load_skill") == "read"
+
+    def test_edit_operations(self) -> None:
+        """Edit tools map to 'edit' kind."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        assert session._infer_tool_kind("write_file") == "edit"
+        assert session._infer_tool_kind("edit_file") == "edit"
+
+    def test_search_operations(self) -> None:
+        """Search tools map to 'search' kind."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        assert session._infer_tool_kind("grep") == "search"
+        assert session._infer_tool_kind("web_search") == "search"
+
+    def test_execute_operations(self) -> None:
+        """Execute tools map to 'execute' kind."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        assert session._infer_tool_kind("bash") == "execute"
+        assert session._infer_tool_kind("python_check") == "execute"
+
+    def test_think_operations(self) -> None:
+        """Think/planning tools map to 'think' kind."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        assert session._infer_tool_kind("todo") == "think"
+        assert session._infer_tool_kind("task") == "think"
+
+    def test_unknown_tools(self) -> None:
+        """Unknown tools map to 'other' kind."""
+        from amplifier_app_runtime.acp.agent import AmplifierAgentSession
+
+        session = AmplifierAgentSession(
+            session_id="test",
+            cwd="/tmp",
+            bundle="foundation",
+            conn=None,
+        )
+        assert session._infer_tool_kind("my_custom_tool") == "other"
+        assert session._infer_tool_kind("unknown") == "other"
+
+
+class TestAgentPlanMapping:
+    """Tests for mapping Amplifier todos to ACP plan updates."""
+
+    def test_plan_entry_creation(self) -> None:
+        """PlanEntry can be created with required fields."""
+        from acp.schema import PlanEntry
+
+        entry = PlanEntry(
+            content="Implement feature X",
+            priority="high",
+            status="pending",
+        )
+        assert entry.content == "Implement feature X"
+        assert entry.priority == "high"
+        assert entry.status == "pending"
+
+    def test_agent_plan_update_creation(self) -> None:
+        """AgentPlanUpdate can be created with entries."""
+        from acp.schema import AgentPlanUpdate, PlanEntry
+
+        entries = [
+            PlanEntry(content="Task 1", priority="high", status="completed"),
+            PlanEntry(content="Task 2", priority="medium", status="in_progress"),
+            PlanEntry(content="Task 3", priority="low", status="pending"),
+        ]
+        plan = AgentPlanUpdate(session_update="plan", entries=entries)
+
+        assert plan.session_update == "plan"
+        assert len(plan.entries) == 3
+        assert plan.entries[0].status == "completed"
+        assert plan.entries[1].status == "in_progress"
+        assert plan.entries[2].status == "pending"
+
+    def test_plan_serialization(self) -> None:
+        """AgentPlanUpdate serializes to correct JSON format."""
+        from acp.schema import AgentPlanUpdate, PlanEntry
+
+        plan = AgentPlanUpdate(
+            session_update="plan",
+            entries=[
+                PlanEntry(content="Build feature", priority="high", status="in_progress"),
+            ],
+        )
+        data = plan.model_dump(by_alias=True, exclude_none=True)
+
+        assert data["sessionUpdate"] == "plan"
+        assert len(data["entries"]) == 1
+        assert data["entries"][0]["content"] == "Build feature"
+        assert data["entries"][0]["priority"] == "high"
+        assert data["entries"][0]["status"] == "in_progress"
+
+
+class TestToolCallProtocolAlignment:
+    """Tests for ACP tool call protocol compliance."""
+
+    def test_tool_call_start_required_fields(self) -> None:
+        """ToolCallStart requires session_update, tool_call_id, and title."""
+        from acp.schema import ToolCallStart
+
+        tc = ToolCallStart(
+            session_update="tool_call",
+            tool_call_id="call_123",
+            title="Reading configuration",
+        )
+        assert tc.session_update == "tool_call"
+        assert tc.tool_call_id == "call_123"
+        assert tc.title == "Reading configuration"
+
+    def test_tool_call_start_with_kind_and_status(self) -> None:
+        """ToolCallStart accepts kind and status."""
+        from acp.schema import ToolCallStart
+
+        tc = ToolCallStart(
+            session_update="tool_call",
+            tool_call_id="call_456",
+            title="Editing file",
+            kind="edit",
+            status="pending",
+            raw_input={"file_path": "/tmp/test.py", "content": "..."},
+        )
+        assert tc.kind == "edit"
+        assert tc.status == "pending"
+        assert tc.raw_input == {"file_path": "/tmp/test.py", "content": "..."}
+
+    def test_tool_call_update_status_values(self) -> None:
+        """ToolCallUpdate status uses correct values."""
+        from acp.schema import ToolCallUpdate
+
+        # Completed
+        tc1 = ToolCallUpdate(tool_call_id="call_1", status="completed")
+        assert tc1.status == "completed"
+
+        # Failed (not 'error')
+        tc2 = ToolCallUpdate(tool_call_id="call_2", status="failed")
+        assert tc2.status == "failed"
+
+        # In progress
+        tc3 = ToolCallUpdate(tool_call_id="call_3", status="in_progress")
+        assert tc3.status == "in_progress"
+
+    def test_tool_call_serialization(self) -> None:
+        """Tool calls serialize with camelCase aliases."""
+        from acp.schema import ToolCallStart
+
+        tc = ToolCallStart(
+            session_update="tool_call",
+            tool_call_id="call_789",
+            title="Searching codebase",
+            kind="search",
+            status="pending",
+        )
+        data = tc.model_dump(by_alias=True, exclude_none=True)
+
+        # Check camelCase serialization
+        assert data["sessionUpdate"] == "tool_call"
+        assert data["toolCallId"] == "call_789"
+        assert data["title"] == "Searching codebase"
+        assert data["kind"] == "search"
+        assert data["status"] == "pending"

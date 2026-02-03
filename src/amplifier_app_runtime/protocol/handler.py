@@ -73,6 +73,10 @@ class CommandHandler:
                     async for event in self._session_get(command):
                         yield event
 
+                case CommandType.SESSION_INFO.value:
+                    async for event in self._session_info(command):
+                        yield event
+
                 case CommandType.SESSION_LIST.value:
                     async for event in self._session_list(command):
                         yield event
@@ -101,6 +105,70 @@ class CommandHandler:
 
                 case CommandType.CAPABILITIES.value:
                     async for event in self._capabilities(command):
+                        yield event
+
+                # Configuration
+                case CommandType.CONFIG_INIT.value:
+                    async for event in self._config_init(command):
+                        yield event
+
+                case CommandType.CONFIG_GET.value:
+                    async for event in self._config_get(command):
+                        yield event
+
+                case CommandType.PROVIDER_LIST.value:
+                    async for event in self._provider_list(command):
+                        yield event
+
+                case CommandType.PROVIDER_DETECT.value:
+                    async for event in self._provider_detect(command):
+                        yield event
+
+                case CommandType.BUNDLE_LIST.value:
+                    async for event in self._bundle_list(command):
+                        yield event
+
+                case CommandType.BUNDLE_INSTALL.value:
+                    async for event in self._bundle_install(command):
+                        yield event
+
+                case CommandType.BUNDLE_ADD.value:
+                    async for event in self._bundle_add(command):
+                        yield event
+
+                case CommandType.BUNDLE_REMOVE.value:
+                    async for event in self._bundle_remove(command):
+                        yield event
+
+                case CommandType.BUNDLE_INFO.value:
+                    async for event in self._bundle_info(command):
+                        yield event
+
+                case CommandType.SESSION_RESET.value:
+                    async for event in self._session_reset(command):
+                        yield event
+
+                # Agent commands
+                case CommandType.AGENTS_LIST.value:
+                    async for event in self._agents_list(command):
+                        yield event
+
+                case CommandType.AGENTS_INFO.value:
+                    async for event in self._agents_info(command):
+                        yield event
+
+                # Tool management
+                case CommandType.TOOLS_LIST.value:
+                    async for event in self._tools_list(command):
+                        yield event
+
+                case CommandType.TOOLS_INFO.value:
+                    async for event in self._tools_info(command):
+                        yield event
+
+                # Slash commands metadata (for TUI/CLI autocomplete)
+                case CommandType.SLASH_COMMANDS_LIST.value:
+                    async for event in self._slash_commands_list(command):
                         yield event
 
                 case _:
@@ -218,6 +286,38 @@ class CommandHandler:
             return
 
         yield Event.result(command.id, data=session.to_dict())
+
+    async def _session_info(self, command: Command) -> AsyncIterator[Event]:
+        """Handle session.info command - detailed session information."""
+        session_id = command.require_param("session_id")
+
+        # Get session info from manager (handles both active and saved)
+        info = self._sessions.get_session_info(session_id)
+
+        if not info:
+            yield Event.error(
+                command.id,
+                error=f"Session not found: {session_id}",
+                code="SESSION_NOT_FOUND",
+            )
+            return
+
+        # Enrich with additional runtime info if session is active
+        session = await self._sessions.get(session_id)
+        if session:
+            # Add tools list if available
+            amp_session = getattr(session, "_amplifier_session", None)
+            if amp_session:
+                config = getattr(amp_session, "config", {})
+                if isinstance(config, dict):
+                    tools = config.get("tools", [])
+                    # Tools can be a list or dict depending on config format
+                    if isinstance(tools, dict):
+                        info["tools"] = list(tools.keys())
+                    elif isinstance(tools, list):
+                        info["tools"] = tools
+
+        yield Event.result(command.id, data=info)
 
     async def _session_list(self, command: Command) -> AsyncIterator[Event]:
         """Handle session.list command."""
@@ -381,6 +481,931 @@ class CommandHandler:
                     "approval": True,
                     "spawning": True,
                 },
+            },
+        )
+
+    # =========================================================================
+    # Configuration Commands
+    # =========================================================================
+
+    async def _config_init(self, command: Command) -> AsyncIterator[Event]:
+        """Handle config.init command.
+
+        Initializes runtime configuration with provider detection and bundle setup.
+        Streams progress events during initialization.
+        """
+        import os
+
+        bundle = command.get_param("bundle", "foundation")
+        detect_providers = command.get_param("detect_providers", True)
+
+        # Start event
+        yield Event.create(
+            EventType.CONFIG_INIT_STARTED,
+            data={"bundle": bundle, "detect_providers": detect_providers},
+            correlation_id=command.id,
+            sequence=0,
+        )
+
+        sequence = 1
+        detected_providers = []
+
+        # Detect providers from environment
+        if detect_providers:
+            provider_checks = [
+                ("anthropic", "ANTHROPIC_API_KEY"),
+                ("openai", "OPENAI_API_KEY"),
+                ("azure-openai", "AZURE_OPENAI_API_KEY"),
+                ("google", "GOOGLE_API_KEY"),
+            ]
+
+            for name, env_var in provider_checks:
+                available = os.getenv(env_var) is not None
+                if available:
+                    detected_providers.append(name)
+
+                yield Event.create(
+                    EventType.CONFIG_INIT_PROVIDER_DETECTED,
+                    data={
+                        "name": name,
+                        "env_var": env_var,
+                        "available": available,
+                    },
+                    correlation_id=command.id,
+                    sequence=sequence,
+                )
+                sequence += 1
+
+        # Bundle set event
+        yield Event.create(
+            EventType.CONFIG_INIT_BUNDLE_SET,
+            data={"bundle": bundle},
+            correlation_id=command.id,
+            sequence=sequence,
+        )
+        sequence += 1
+
+        # Completed event with full config
+        yield Event.result(
+            command.id,
+            data={
+                "initialized": True,
+                "config": {
+                    "default_bundle": bundle,
+                    "providers_detected": detected_providers,
+                    "default_provider": detected_providers[0] if detected_providers else None,
+                },
+            },
+        )
+
+    async def _config_get(self, command: Command) -> AsyncIterator[Event]:
+        """Handle config.get command."""
+        import os
+        from pathlib import Path
+
+        # Get current configuration
+        config = {
+            "data_dir": str(Path.home() / ".amplifier-runtime"),
+            "default_bundle": os.getenv("AMPLIFIER_BUNDLE", "foundation"),
+            "providers_configured": [],
+        }
+
+        # Check configured providers
+        provider_vars = [
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("openai", "OPENAI_API_KEY"),
+            ("azure-openai", "AZURE_OPENAI_API_KEY"),
+            ("google", "GOOGLE_API_KEY"),
+        ]
+
+        for name, env_var in provider_vars:
+            if os.getenv(env_var):
+                config["providers_configured"].append(name)
+
+        if config["providers_configured"]:
+            config["default_provider"] = config["providers_configured"][0]
+        else:
+            config["default_provider"] = None
+
+        yield Event.result(command.id, data=config)
+
+    async def _provider_list(self, command: Command) -> AsyncIterator[Event]:
+        """Handle provider.list command."""
+        import os
+
+        providers = []
+        provider_checks = [
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("openai", "OPENAI_API_KEY"),
+            ("azure-openai", "AZURE_OPENAI_API_KEY"),
+            ("google", "GOOGLE_API_KEY"),
+        ]
+
+        for name, env_var in provider_checks:
+            providers.append(
+                {
+                    "name": name,
+                    "env_var": env_var,
+                    "available": os.getenv(env_var) is not None,
+                }
+            )
+
+        yield Event.result(command.id, data={"providers": providers})
+
+    async def _provider_detect(self, command: Command) -> AsyncIterator[Event]:
+        """Handle provider.detect command."""
+        import os
+
+        detected = []
+        provider_checks = [
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("openai", "OPENAI_API_KEY"),
+            ("azure-openai", "AZURE_OPENAI_API_KEY"),
+            ("google", "GOOGLE_API_KEY"),
+        ]
+
+        for name, env_var in provider_checks:
+            if os.getenv(env_var):
+                detected.append(
+                    {
+                        "name": name,
+                        "env_var": env_var,
+                    }
+                )
+
+        yield Event.result(
+            command.id,
+            data={
+                "detected": detected,
+                "count": len(detected),
+                "default": detected[0]["name"] if detected else None,
+            },
+        )
+
+    async def _bundle_list(self, command: Command) -> AsyncIterator[Event]:
+        """Handle bundle.list command."""
+        from ..bundle_manager import BundleManager
+
+        manager = BundleManager()
+        bundles = await manager.list_bundles()
+
+        yield Event.result(
+            command.id,
+            data={
+                "bundles": [
+                    {"name": b.name, "description": b.description, "uri": b.uri} for b in bundles
+                ],
+            },
+        )
+
+    async def _bundle_install(self, command: Command) -> AsyncIterator[Event]:
+        """Handle bundle.install command.
+
+        Installs a bundle from a source (git URL, local path, or registry).
+        Streams progress events during installation.
+        """
+        from ..bundle_manager import BundleManager
+
+        source = command.require_param("source")
+        name = command.get_param("name")  # Optional, derived from source if not provided
+
+        manager = BundleManager()
+        sequence = 0
+
+        # Start event
+        yield Event.create(
+            EventType.BUNDLE_INSTALL_STARTED,
+            data={"source": source, "name": name},
+            correlation_id=command.id,
+            sequence=sequence,
+        )
+        sequence += 1
+
+        try:
+            # Install with progress callback
+            async for progress in manager.install_bundle(source, name):
+                yield Event.create(
+                    EventType.BUNDLE_INSTALL_PROGRESS,
+                    data=progress,
+                    correlation_id=command.id,
+                    sequence=sequence,
+                )
+                sequence += 1
+
+            # Get installed bundle info
+            installed = await manager.get_bundle_info(name or manager.name_from_source(source))
+
+            yield Event.result(
+                command.id,
+                data={
+                    "installed": True,
+                    "name": installed.name,
+                    "path": str(installed.path),
+                    "source": source,
+                },
+            )
+
+        except Exception as e:
+            yield Event.create(
+                EventType.BUNDLE_INSTALL_ERROR,
+                data={"error": str(e), "source": source},
+                correlation_id=command.id,
+                sequence=sequence,
+                final=True,
+            )
+
+    async def _bundle_add(self, command: Command) -> AsyncIterator[Event]:
+        """Handle bundle.add command.
+
+        Registers a local bundle path with a name.
+        """
+        from ..bundle_manager import BundleManager
+
+        path = command.require_param("path")
+        name = command.require_param("name")
+
+        manager = BundleManager()
+
+        try:
+            bundle_info = await manager.add_local_bundle(path, name)
+            yield Event.result(
+                command.id,
+                data={
+                    "added": True,
+                    "name": bundle_info.name,
+                    "path": str(bundle_info.path),
+                },
+            )
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="BUNDLE_ADD_FAILED",
+            )
+
+    async def _bundle_remove(self, command: Command) -> AsyncIterator[Event]:
+        """Handle bundle.remove command."""
+        from ..bundle_manager import BundleManager
+
+        name = command.require_param("name")
+
+        manager = BundleManager()
+
+        try:
+            removed = await manager.remove_bundle(name)
+            yield Event.result(
+                command.id,
+                data={"removed": removed, "name": name},
+            )
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="BUNDLE_REMOVE_FAILED",
+            )
+
+    async def _bundle_info(self, command: Command) -> AsyncIterator[Event]:
+        """Handle bundle.info command."""
+        from ..bundle_manager import BundleManager
+
+        name = command.require_param("name")
+
+        manager = BundleManager()
+
+        try:
+            info = await manager.get_bundle_info(name)
+            yield Event.result(
+                command.id,
+                data={
+                    "name": info.name,
+                    "description": info.description,
+                    "uri": info.uri,
+                    "path": str(info.path) if info.path else None,
+                    "source": info.source,
+                },
+            )
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="BUNDLE_NOT_FOUND",
+            )
+
+    # =========================================================================
+    # Session Reset
+    # =========================================================================
+
+    async def _session_reset(self, command: Command) -> AsyncIterator[Event]:
+        """Handle session.reset command.
+
+        Resets a session with optional new bundle configuration.
+        Creates a new session and optionally preserves history.
+        """
+        from ..session import SessionConfig
+
+        session_id = command.require_param("session_id")
+        bundle = command.get_param("bundle")
+        preserve_history = command.get_param("preserve_history", False)
+
+        # Get old session
+        old_session = await self._sessions.get(session_id)
+        if not old_session:
+            yield Event.error(
+                command.id,
+                error=f"Session not found: {session_id}",
+                code="SESSION_NOT_FOUND",
+            )
+            return
+
+        # Get bundle name from old session metadata
+        old_bundle = old_session.metadata.bundle_name or "foundation"
+        new_bundle = bundle or old_bundle
+
+        # Start event
+        yield Event.create(
+            EventType.SESSION_RESET_STARTED,
+            data={
+                "session_id": session_id,
+                "bundle": new_bundle,
+                "preserve_history": preserve_history,
+            },
+            correlation_id=command.id,
+            sequence=0,
+        )
+
+        try:
+            # Create new session config
+            # Use working directory from old session metadata (cwd field)
+            config = SessionConfig(
+                bundle=new_bundle,
+                working_directory=old_session.metadata.cwd,
+            )
+
+            # Create new session
+            new_session = await self._sessions.create(config=config)
+            await new_session.initialize()
+
+            # TODO: If preserve_history, copy conversation history
+            # This would require serializing/deserializing messages
+
+            # Delete old session
+            await self._sessions.delete(session_id)
+
+            # Completed event
+            yield Event.create(
+                EventType.SESSION_RESET_COMPLETED,
+                data={
+                    "old_session_id": session_id,
+                    "new_session_id": new_session.session_id,
+                    "bundle": new_session.metadata.bundle_name,
+                    "state": new_session.metadata.state.value,
+                },
+                correlation_id=command.id,
+                sequence=1,
+                final=True,
+            )
+
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="SESSION_RESET_FAILED",
+            )
+
+    # =========================================================================
+    # Agent Commands
+    # =========================================================================
+
+    async def _agents_list(self, command: Command) -> AsyncIterator[Event]:
+        """Handle agents.list command.
+
+        Lists all available agents from the current bundle configuration.
+        Can optionally filter by session to show agents available in that session's bundle.
+        """
+        session_id = command.get_param("session_id")
+
+        try:
+            agents = []
+
+            if session_id:
+                # Get agents from specific session's bundle
+                session = await self._sessions.get(session_id)
+                if not session:
+                    yield Event.error(
+                        command.id,
+                        error=f"Session not found: {session_id}",
+                        code="SESSION_NOT_FOUND",
+                    )
+                    return
+
+                # Extract agents from session's coordinator config
+                if hasattr(session, "_amplifier_session") and session._amplifier_session:
+                    config = getattr(session._amplifier_session, "config", {})
+                    if isinstance(config, dict):
+                        agent_configs = config.get("agents", {})
+                    else:
+                        agent_configs = getattr(config, "agents", {}) or {}
+
+                    for name, agent_config in agent_configs.items():
+                        if isinstance(agent_config, dict):
+                            agents.append(
+                                {
+                                    "name": name,
+                                    "description": agent_config.get("description", ""),
+                                    "bundle": agent_config.get("bundle", ""),
+                                }
+                            )
+                        else:
+                            # Handle object-style config
+                            agents.append(
+                                {
+                                    "name": name,
+                                    "description": getattr(agent_config, "description", ""),
+                                    "bundle": getattr(agent_config, "bundle", ""),
+                                }
+                            )
+            else:
+                # List agents from all active sessions
+                all_sessions = await self._sessions.list_active()
+                seen_agents = set()
+
+                for sess_info in all_sessions:
+                    session = await self._sessions.get(sess_info.session_id)
+                    if (
+                        session
+                        and hasattr(session, "_amplifier_session")
+                        and session._amplifier_session
+                    ):
+                        config = getattr(session._amplifier_session, "config", {})
+                        if isinstance(config, dict):
+                            agent_configs = config.get("agents", {})
+                        else:
+                            agent_configs = getattr(config, "agents", {}) or {}
+
+                        for name, agent_config in agent_configs.items():
+                            if name not in seen_agents:
+                                seen_agents.add(name)
+                                if isinstance(agent_config, dict):
+                                    agents.append(
+                                        {
+                                            "name": name,
+                                            "description": agent_config.get("description", ""),
+                                            "bundle": agent_config.get("bundle", ""),
+                                        }
+                                    )
+                                else:
+                                    agents.append(
+                                        {
+                                            "name": name,
+                                            "description": getattr(agent_config, "description", ""),
+                                            "bundle": getattr(agent_config, "bundle", ""),
+                                        }
+                                    )
+
+            yield Event.result(
+                command.id,
+                data={"agents": agents, "count": len(agents)},
+            )
+
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="AGENTS_LIST_FAILED",
+            )
+
+    async def _agents_info(self, command: Command) -> AsyncIterator[Event]:
+        """Handle agents.info command.
+
+        Gets detailed information about a specific agent.
+        """
+        agent_name = command.require_param("name")
+        session_id = command.get_param("session_id")
+
+        try:
+            agent_info = None
+
+            # Find the agent in session config
+            if session_id:
+                session = await self._sessions.get(session_id)
+                if (
+                    session
+                    and hasattr(session, "_amplifier_session")
+                    and session._amplifier_session
+                ):
+                    config = getattr(session._amplifier_session, "config", {})
+                    if isinstance(config, dict):
+                        agent_configs = config.get("agents", {})
+                    else:
+                        agent_configs = getattr(config, "agents", {}) or {}
+
+                    if agent_name in agent_configs:
+                        agent_config = agent_configs[agent_name]
+                        if isinstance(agent_config, dict):
+                            agent_info = {
+                                "name": agent_name,
+                                "description": agent_config.get("description", ""),
+                                "bundle": agent_config.get("bundle", ""),
+                                "instructions": agent_config.get("instructions", ""),
+                            }
+                        else:
+                            agent_info = {
+                                "name": agent_name,
+                                "description": getattr(agent_config, "description", ""),
+                                "bundle": getattr(agent_config, "bundle", ""),
+                                "instructions": getattr(agent_config, "instructions", ""),
+                            }
+
+            if not agent_info:
+                # Search all sessions
+                all_sessions = await self._sessions.list_active()
+                for sess_info in all_sessions:
+                    session = await self._sessions.get(sess_info.session_id)
+                    if (
+                        session
+                        and hasattr(session, "_amplifier_session")
+                        and session._amplifier_session
+                    ):
+                        config = getattr(session._amplifier_session, "config", {})
+                        if isinstance(config, dict):
+                            agent_configs = config.get("agents", {})
+                        else:
+                            agent_configs = getattr(config, "agents", {}) or {}
+
+                        if agent_name in agent_configs:
+                            agent_config = agent_configs[agent_name]
+                            if isinstance(agent_config, dict):
+                                agent_info = {
+                                    "name": agent_name,
+                                    "description": agent_config.get("description", ""),
+                                    "bundle": agent_config.get("bundle", ""),
+                                    "instructions": agent_config.get("instructions", ""),
+                                }
+                            else:
+                                agent_info = {
+                                    "name": agent_name,
+                                    "description": getattr(agent_config, "description", ""),
+                                    "bundle": getattr(agent_config, "bundle", ""),
+                                    "instructions": getattr(agent_config, "instructions", ""),
+                                }
+                            break
+
+            if agent_info:
+                yield Event.result(command.id, data=agent_info)
+            else:
+                yield Event.error(
+                    command.id,
+                    error=f"Agent not found: {agent_name}",
+                    code="AGENT_NOT_FOUND",
+                )
+
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="AGENTS_INFO_FAILED",
+            )
+
+    async def _tools_list(self, command: Command) -> AsyncIterator[Event]:
+        """Handle tools.list command.
+
+        Lists all available tools from the current session's bundle configuration.
+        """
+        session_id = command.get_param("session_id")
+
+        try:
+            tools: list[dict[str, Any]] = []
+
+            def extract_tools_from_session(session: Any) -> list[dict[str, Any]]:
+                """Extract tool list from a ManagedSession."""
+                result = []
+                amp_session = getattr(session, "_amplifier_session", None)
+                if not amp_session:
+                    return result
+
+                config = getattr(amp_session, "config", {})
+                if not isinstance(config, dict):
+                    return result
+
+                tool_configs = config.get("tools", {})
+
+                # Handle both dict and list formats
+                if isinstance(tool_configs, dict):
+                    for name, tool_config in tool_configs.items():
+                        if isinstance(tool_config, dict):
+                            result.append(
+                                {
+                                    "name": name,
+                                    "description": tool_config.get("description", ""),
+                                    "module": tool_config.get("module", ""),
+                                }
+                            )
+                        else:
+                            result.append(
+                                {
+                                    "name": name,
+                                    "description": getattr(tool_config, "description", ""),
+                                    "module": getattr(tool_config, "module", ""),
+                                }
+                            )
+                elif isinstance(tool_configs, list):
+                    for tool in tool_configs:
+                        if isinstance(tool, str):
+                            result.append({"name": tool, "description": "", "module": tool})
+                        elif isinstance(tool, dict):
+                            name = tool.get("name", tool.get("module", "unknown"))
+                            result.append(
+                                {
+                                    "name": name,
+                                    "description": tool.get("description", ""),
+                                    "module": tool.get("module", name),
+                                }
+                            )
+                return result
+
+            if session_id:
+                session = await self._sessions.get(session_id)
+                if not session:
+                    yield Event.error(
+                        command.id,
+                        error=f"Session not found: {session_id}",
+                        code="SESSION_NOT_FOUND",
+                    )
+                    return
+                tools = extract_tools_from_session(session)
+            else:
+                # List tools from all active sessions
+                all_sessions = await self._sessions.list_active()
+                seen_tools: set[str] = set()
+
+                for sess_info in all_sessions:
+                    session = await self._sessions.get(sess_info.get("session_id", ""))
+                    if session:
+                        for tool in extract_tools_from_session(session):
+                            if tool["name"] not in seen_tools:
+                                seen_tools.add(tool["name"])
+                                tools.append(tool)
+
+            yield Event.result(
+                command.id,
+                data={"tools": tools, "count": len(tools)},
+            )
+
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="TOOLS_LIST_FAILED",
+            )
+
+    async def _tools_info(self, command: Command) -> AsyncIterator[Event]:
+        """Handle tools.info command.
+
+        Gets detailed information about a specific tool.
+        """
+        tool_name = command.require_param("name")
+        session_id = command.get_param("session_id")
+
+        try:
+            tool_info: dict[str, Any] | None = None
+
+            if session_id:
+                session = await self._sessions.get(session_id)
+                if not session:
+                    yield Event.error(
+                        command.id,
+                        error=f"Session not found: {session_id}",
+                        code="SESSION_NOT_FOUND",
+                    )
+                    return
+
+                amp_session = getattr(session, "_amplifier_session", None)
+                if amp_session:
+                    config = getattr(amp_session, "config", {})
+                    if isinstance(config, dict):
+                        tool_configs = config.get("tools", {})
+                        if isinstance(tool_configs, dict) and tool_name in tool_configs:
+                            tc = tool_configs[tool_name]
+                            if isinstance(tc, dict):
+                                tool_info = {
+                                    "name": tool_name,
+                                    "description": tc.get("description", ""),
+                                    "module": tc.get("module", ""),
+                                    "config": tc.get("config", {}),
+                                }
+                            else:
+                                tool_info = {
+                                    "name": tool_name,
+                                    "description": getattr(tc, "description", ""),
+                                    "module": getattr(tc, "module", ""),
+                                }
+
+            if not tool_info:
+                # Search all sessions
+                all_sessions = await self._sessions.list_active()
+                for sess_info in all_sessions:
+                    session = await self._sessions.get(sess_info.get("session_id", ""))
+                    if session:
+                        amp_session = getattr(session, "_amplifier_session", None)
+                        if amp_session:
+                            config = getattr(amp_session, "config", {})
+                            if isinstance(config, dict):
+                                tool_configs = config.get("tools", {})
+                                if isinstance(tool_configs, dict) and tool_name in tool_configs:
+                                    tc = tool_configs[tool_name]
+                                    if isinstance(tc, dict):
+                                        tool_info = {
+                                            "name": tool_name,
+                                            "description": tc.get("description", ""),
+                                            "module": tc.get("module", ""),
+                                            "config": tc.get("config", {}),
+                                        }
+                                    else:
+                                        tool_info = {
+                                            "name": tool_name,
+                                            "description": getattr(tc, "description", ""),
+                                            "module": getattr(tc, "module", ""),
+                                        }
+                                    break
+
+            if tool_info:
+                yield Event.result(command.id, data=tool_info)
+            else:
+                yield Event.error(
+                    command.id,
+                    error=f"Tool not found: {tool_name}",
+                    code="TOOL_NOT_FOUND",
+                )
+
+        except Exception as e:
+            yield Event.error(
+                command.id,
+                error=str(e),
+                code="TOOLS_INFO_FAILED",
+            )
+
+    async def _slash_commands_list(self, command: Command) -> AsyncIterator[Event]:
+        """Handle slash_commands.list command.
+
+        Returns the list of available slash commands for TUI/CLI autocomplete.
+        This enables clients to stay in sync with available commands.
+        """
+        # Define the canonical list of slash commands
+        # This mirrors what app-cli supports
+        commands = [
+            {
+                "name": "help",
+                "aliases": ["h", "?"],
+                "description": "Show available commands",
+                "subcommands": [],
+            },
+            {
+                "name": "bundle",
+                "aliases": ["b"],
+                "description": "Bundle management",
+                "subcommands": [
+                    {"name": "list", "aliases": ["ls"], "description": "List available bundles"},
+                    {"name": "install", "aliases": ["i"], "description": "Install a bundle"},
+                    {"name": "add", "aliases": [], "description": "Add a bundle from URL"},
+                    {"name": "remove", "aliases": ["rm"], "description": "Remove a bundle"},
+                    {"name": "use", "aliases": [], "description": "Set active bundle"},
+                    {"name": "info", "aliases": [], "description": "Show bundle details"},
+                ],
+            },
+            {
+                "name": "agents",
+                "aliases": ["agent", "a"],
+                "description": "List available agents",
+                "subcommands": [
+                    {"name": "list", "aliases": ["ls"], "description": "List agents"},
+                    {"name": "info", "aliases": [], "description": "Show agent details"},
+                ],
+            },
+            {
+                "name": "tools",
+                "aliases": ["t"],
+                "description": "List available tools",
+                "subcommands": [],
+            },
+            {
+                "name": "mode",
+                "aliases": [],
+                "description": "Set or toggle a mode",
+                "subcommands": [],
+            },
+            {
+                "name": "modes",
+                "aliases": [],
+                "description": "List available modes",
+                "subcommands": [],
+            },
+            {
+                "name": "session",
+                "aliases": ["s"],
+                "description": "Session management",
+                "subcommands": [
+                    {"name": "list", "aliases": ["ls"], "description": "List sessions"},
+                    {"name": "info", "aliases": [], "description": "Show session info"},
+                    {"name": "switch", "aliases": [], "description": "Switch to session"},
+                ],
+            },
+            {
+                "name": "reset",
+                "aliases": [],
+                "description": "Reset current session",
+                "subcommands": [],
+                "flags": ["--bundle", "--preserve"],
+            },
+            {
+                "name": "init",
+                "aliases": [],
+                "description": "Initialize configuration",
+                "subcommands": [],
+            },
+            {
+                "name": "config",
+                "aliases": [],
+                "description": "Show current configuration",
+                "subcommands": [],
+            },
+            {
+                "name": "status",
+                "aliases": [],
+                "description": "Show session status",
+                "subcommands": [],
+            },
+            {
+                "name": "save",
+                "aliases": [],
+                "description": "Save conversation transcript",
+                "subcommands": [],
+            },
+            {
+                "name": "clear",
+                "aliases": [],
+                "description": "Clear conversation context",
+                "subcommands": [],
+            },
+            {
+                "name": "rename",
+                "aliases": [],
+                "description": "Rename current session",
+                "subcommands": [],
+            },
+            {
+                "name": "fork",
+                "aliases": [],
+                "description": "Fork session at turn N",
+                "subcommands": [],
+            },
+            {
+                "name": "allowed-dirs",
+                "aliases": [],
+                "description": "Manage allowed write directories",
+                "subcommands": [],
+            },
+            {
+                "name": "denied-dirs",
+                "aliases": [],
+                "description": "Manage denied write directories",
+                "subcommands": [],
+            },
+            {
+                "name": "quit",
+                "aliases": ["exit", "q"],
+                "description": "Exit the application",
+                "subcommands": [],
+            },
+        ]
+
+        # Mode shortcuts
+        mode_shortcuts = [
+            {
+                "name": "careful",
+                "aliases": [],
+                "description": "Full capability with confirmation for destructive actions",
+                "is_mode_shortcut": True,
+            },
+            {
+                "name": "explore",
+                "aliases": [],
+                "description": "Zero-footprint exploration - understand before acting",
+                "is_mode_shortcut": True,
+            },
+            {
+                "name": "plan",
+                "aliases": [],
+                "description": "Analyze, strategize, and organize - but don't implement",
+                "is_mode_shortcut": True,
+            },
+        ]
+
+        yield Event.result(
+            command.id,
+            data={
+                "commands": commands,
+                "mode_shortcuts": mode_shortcuts,
+                "count": len(commands) + len(mode_shortcuts),
             },
         )
 

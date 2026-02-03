@@ -1,12 +1,14 @@
 """Streaming hook for forwarding events to clients.
 
 Captures amplifier-core events and forwards them via the transport layer.
+Also queues events for yielding by session.execute().
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from ..transport.base import Event
@@ -20,7 +22,8 @@ class ServerStreamingHook:
     This is registered with the session's hook registry to capture all
     events and forward them to connected clients via the send function.
 
-    Similar to WebStreamingHook in amplifier-web but transport-agnostic.
+    Events are also queued so they can be yielded by session.execute().
+    This ensures the SDK client receives ALL events (thinking, tools, etc).
     """
 
     def __init__(
@@ -37,10 +40,47 @@ class ServerStreamingHook:
         self._send_fn = send_fn
         self._show_thinking = show_thinking
         self._sequence = 0
+        # Queue for events to be yielded by execute()
+        self._event_queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self._streaming = False
 
     def set_send_fn(self, send_fn: Callable[[Event], Awaitable[None]]) -> None:
         """Set the send function after initialization."""
         self._send_fn = send_fn
+
+    def start_streaming(self) -> None:
+        """Start collecting events for streaming."""
+        self._streaming = True
+        # Clear any stale events
+        while not self._event_queue.empty():
+            try:
+                self._event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def stop_streaming(self) -> None:
+        """Stop streaming and signal completion."""
+        self._streaming = False
+        # Signal end of stream
+        self._event_queue.put_nowait(None)
+
+    async def get_events(self) -> AsyncIterator[Event]:
+        """Yield events as they arrive during execution."""
+        while True:
+            event = await self._event_queue.get()
+            if event is None:
+                break
+            yield event
+
+    # Events with potentially huge payloads that should not be forwarded to clients
+    SKIP_EVENTS = {
+        "llm:request:raw",
+        "llm:response:raw",
+        "llm:request:debug",
+        "llm:response:debug",
+        "session:start:raw",
+        "session:start:debug",
+    }
 
     async def __call__(self, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         """Handle an event from amplifier-core.
@@ -52,7 +92,8 @@ class ServerStreamingHook:
         Returns:
             HookResult-compatible dict with action="continue"
         """
-        if not self._send_fn:
+        # Skip raw/debug events with huge payloads
+        if event_type in self.SKIP_EVENTS:
             return {"action": "continue"}
 
         # Skip thinking events if disabled
@@ -68,10 +109,16 @@ class ServerStreamingHook:
             )
             self._sequence += 1
 
-            await self._send_fn(transport_event)
+            # Queue event for yielding by execute()
+            if self._streaming:
+                self._event_queue.put_nowait(transport_event)
+
+            # Also send via send_fn if available (for other channels)
+            if self._send_fn:
+                await self._send_fn(transport_event)
 
         except Exception as e:
-            logger.warning(f"Failed to send event {event_type}: {e}")
+            logger.warning(f"Failed to handle event {event_type}: {e}")
 
         # Always continue - streaming is observational
         return {"action": "continue"}
@@ -99,6 +146,7 @@ DEFAULT_EVENTS_TO_CAPTURE = [
     "session:start",
     "session:end",
     "session:fork",
+    "session:join",  # When sub-session completes
     "session:resume",
     # Prompt lifecycle
     "prompt:submit",
@@ -126,6 +174,8 @@ DEFAULT_EVENTS_TO_CAPTURE = [
     # Artifacts
     "artifact:write",
     "artifact:read",
+    # Todos (from amplifier-core todo tool)
+    "todo:update",
     # Approval
     "approval:required",
     "approval:granted",
