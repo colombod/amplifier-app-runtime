@@ -6,6 +6,7 @@ Integrates with the session manager for full Amplifier lifecycle support.
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from pydantic import BaseModel
@@ -14,6 +15,8 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from ..session import SessionConfig, session_manager
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Request/Response Models
@@ -89,6 +92,7 @@ async def create_session(request: Request) -> JSONResponse:
     req = CreateSessionRequest(**body)
 
     prepared_bundle = None
+    client_tools_to_register: list[dict[str, Any]] = []
 
     # Handle runtime bundle definition
     if req.bundle_definition:
@@ -108,6 +112,12 @@ async def create_session(request: Request) -> JSONResponse:
                 instruction=defn.get("instructions") or defn.get("instruction"),
                 session=defn.get("session", {}),
                 includes=defn.get("includes", []),
+            )
+
+            # Store client tools for later registration (after session init)
+            client_tools_to_register = defn.get("clientTools", [])
+            logger.info(
+                f"DEBUG: Extracted {len(client_tools_to_register)} client tools from bundle"
             )
 
             # Auto-detect and inject provider if not specified
@@ -143,6 +153,34 @@ async def create_session(request: Request) -> JSONResponse:
 
     # Initialize the session (loads bundle, prepares amplifier-core)
     await session.initialize(prepared_bundle=prepared_bundle)
+
+    # Register client-side tools if any were provided in bundle_definition
+    logger.info(
+        f"DEBUG: About to check client tools registration. bundle_def={bool(req.bundle_definition)}, tools={len(client_tools_to_register)}"
+    )
+
+    if req.bundle_definition and client_tools_to_register:
+        logger.info("DEBUG: Client tools registration condition passed")
+        from ..client_tools import register_client_tools
+
+        # Use _amplifier_session which is the actual AmplifierSession instance
+        logger.info(
+            f"DEBUG: Session has _amplifier_session: {hasattr(session, '_amplifier_session')}"
+        )
+        if session._amplifier_session:
+            logger.info(
+                f"DEBUG: Calling register_client_tools with {len(client_tools_to_register)} tools"
+            )
+            registered = await register_client_tools(
+                session._amplifier_session, client_tools_to_register
+            )
+            logger.info(f"✅ Registered {len(registered)} client-side tools: {registered}")
+        else:
+            logger.warning("Session._amplifier_session not available")
+    else:
+        logger.info(
+            f"DEBUG: Skipping client tools (bundle_def={bool(req.bundle_definition)}, tools_count={len(client_tools_to_register)})"
+        )
 
     return JSONResponse(session.to_dict(), status_code=201)
 
